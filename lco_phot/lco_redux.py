@@ -5,6 +5,9 @@ import warnings
 import numpy as np
 import pandas as pd
 import astropy.units as u
+import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
+import matplotlib.patheffects as pe
 
 from astropy import wcs
 from astropy.io import fits
@@ -45,10 +48,12 @@ WCS_ORIGIN = 0
 
 
 def lco_redux(fits_name, target_coord, comp_coord, 
+    r_aperture=1.0, r_inner_annulus=5.0, r_outer_annulus=10.0,
     target_query_constraints=None, target_query_save=False, target_query_dir=None, 
     target_query_name=None, target_query_format='csv',full_query_constraints=None, 
     full_query_save=False, full_query_dir=None, full_query_name=None, 
     full_query_format='csv', phot_save=False, phot_dir=None, phot_name=None, 
+    plot_cutout=False, plot_save=False, plot_dir=None, plot_name=None, 
     verbose=False):
 
     # RA-Dec Coords of Target & Comps in ProEM Frame
@@ -382,9 +387,84 @@ def lco_redux(fits_name, target_coord, comp_coord,
     fwhm_mode = fwhm_grid[kdevals_fwhm == max(kdevals_fwhm)][0]
 
     # Define Aperture with radius = FWHM (in pixels)
-    ap_choice = fwhm_mode/platescale
+    ap_choice = r_aperture*fwhm_mode/platescale
     print('Aperture Radius (Pixels) = {:.2f}'.format(ap_choice))
     print('Aperture Radius (arcsec) = {:.2f}'.format(ap_choice*platescale))
+
+
+
+    """ Plot Cutout Image """
+
+    if plot_cutout or plot_save:
+
+        # Get Z-Scale Normalization vmin and vmax
+        ZS = ZScaleInterval(nsamples=10000, contrast=0.15, max_reject=0.5, 
+                        min_npixels=5, krej=2.5, max_iterations=5)
+        
+
+        # Get image cutouts extents
+        cutout_width = int(1.5 * r_outer_annulus * fwhm_mode/platescale)
+        xmid,ymid = int(round(xc[0])),int(round(yc[0]))
+        xlow,xupp = xmid-cutout_width,xmid+cutout_width
+        ylow,yupp = ymid-cutout_width,ymid+cutout_width
+        implot = image[ylow:yupp,xlow:xupp]
+        vmin,vmax = ZS.get_limits(implot)
+
+        fig = plt.figure(figsize=(6,6))
+        ax = fig.add_subplot(111)
+
+        ax.imshow(implot, vmin=vmin, vmax=vmax, cmap='Greys_r', origin='lower',
+            extent=(xlow-1,xlow+2*cutout_width,
+                    ylow-1,ylow+2*cutout_width))
+
+        c1 = mpatches.Circle(
+            (xc[0],yc[0]), 
+            r_aperture*fwhm_mode/platescale, 
+            ec="c", fc='None',lw=2.5)
+        c2 = mpatches.Circle(
+            (xc[0],yc[0]), 
+            r_inner_annulus*fwhm_mode/platescale, 
+            ec="w", fc='None',lw=4, ls='-',alpha=0.5)
+        c3 = mpatches.Circle(
+            (xc[0],yc[0]), 
+            r_outer_annulus*fwhm_mode/platescale, 
+            ec="w", fc='None',lw=4, ls='-',alpha=0.5)
+        c4 = mpatches.Circle(
+            (xc[0],yc[0]), 
+            r_inner_annulus*fwhm_mode/platescale, 
+            ec="m", fc='None',lw=2, ls='--')
+        c5 = mpatches.Circle(
+            (xc[0],yc[0]), 
+            r_outer_annulus*fwhm_mode/platescale, 
+            ec="m", fc='None',lw=2, ls='--')
+        ax.add_patch(c1)
+        ax.add_patch(c2)
+        ax.add_patch(c3)
+        ax.add_patch(c5)
+        ax.add_patch(c4)
+
+        # Add FWHM text
+        fig_text = f"FWHM = {fwhm_mode:.2f}$''$"
+        ax.text(0.05,0.92,fig_text, fontsize=16,ha='left', c='r',fontweight='heavy',
+            transform=ax.transAxes, path_effects=[pe.withStroke(linewidth=4, foreground="silver")])
+
+
+        ax.tick_params(color='silver', labelcolor='silver')
+        for spine in ax.spines.values():
+            spine.set_edgecolor('silver')
+        fig.set_facecolor('k')
+
+        # Save results
+        if plot_save:
+            if plot_dir is None:
+                plot_dir = "./"
+            if plot_name is None:
+                plot_name = '{}_cutout.png'.format(fits_name.split("/")[-1].split(".")[0])
+
+            plot_name = f'{plot_dir}{plot_name}'
+            plt.savefig(plot_name,dpi=200,bbox_inches='tight')
+
+        plt.show()
 
 
 
@@ -396,7 +476,11 @@ def lco_redux(fits_name, target_coord, comp_coord,
     ap_phot = np.zeros(len(object_coords_keep))
     positions = [(x,y) for x,y in zip(xc,yc)]
     aperture = CircularAperture(positions, r=ap_choice)
-    annulus = CircularAnnulus(positions, r_in=20., r_out=30.)
+    annulus = CircularAnnulus(
+        positions, 
+        r_in=r_inner_annulus*fwhm_mode/platescale, 
+        r_out=r_outer_annulus*fwhm_mode/platescale
+    )
     phot_table = aperture_photometry(image, [aperture,annulus])
 
     # Calculate the median sky annulus counts
