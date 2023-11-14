@@ -169,6 +169,50 @@ def get_centroid(data,xpix,ypix,fits_name,bw=15,progress=True):
     return xcentroids,ycentroids,xstddevs,ystddevs
 
 
+def poly_linear_fixed(x,z):
+    """Linear polynomial with slope = 1
+    """
+    return x + z
+
+def poly_linear(x,z,a):
+    """ Linear polynomial with variable slope
+    """
+    return a*x + z
+
+
+def polyfit(fit_x,fit_y,err_x,err_y,fit_option, num_iter=10, sigma_threshold=2.0):
+    """
+    Polynomial fitting routine with iterative
+    sigma-clipping.
+    """
+
+    for i in range(num_iter):
+        
+        # Calculate the average P2P scatter
+        Nv = len(fit_x)
+        next_values = np.append(fit_y[1:],fit_y[-2])
+        pp_avg = (sum((fit_y-next_values)**2)/Nv)**(0.5)
+
+        # Do a Linear fix with slope = 1
+        if fit_option == '1':
+            pfit,cov = curve_fit(poly_linear_fixed, fit_x, fit_y)#, sigma=err_y)
+            residual = fit_y - poly_linear_fixed(fit_x,*pfit)
+        if fit_option == '2':
+            pfit,cov = curve_fit(poly_linear, fit_x, fit_y, sigma=err_y)
+            residual = fit_y - poly_linear(fit_x,*pfit)
+
+        # Do sigma clipping
+        good_idx = np.where(abs(residual) < sigma_threshold*pp_avg)
+
+        # Redefine the data to be fit
+        fit_x = fit_x[good_idx]
+        fit_y = fit_y[good_idx]
+        err_x = err_x[good_idx]
+        err_y = err_y[good_idx]
+
+    return pfit,cov,fit_x,fit_y,err_x,err_y
+
+
 def get_location(sitename):
 
     if 'McDonald' in sitename:

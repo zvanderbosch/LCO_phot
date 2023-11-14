@@ -26,6 +26,7 @@ from photutils import CircularAnnulus
 from utils import ps1_query, angle_sep
 from utils import get_centroid, gauss2d_fitter
 from utils import get_location
+from utils import polyfit, poly_linear, poly_linear_fixed
 
 """
 Python-based reduction of Las Cumbres Observatory (LCO)
@@ -470,73 +471,47 @@ def lco_redux(fits_name, target_coord, comp_coord,
     mode_color = color_grid[kdevals == max(kdevals)][0]
 
 
-    # This function fits a linear trend to
-    # PS1 Magnitude versus Instrumental Magnitude 
-    def poly(x,c):
-        return x + c
-
-    # This function fits a linear trend to the 
-    # color difference with the free parameters being the 
-    # magnitude zero point (z) and the color term (c).
-    def poly2(color,z,c):
-        return z + (c*color)
-
-    # The Fitting Procedure with Sigma Clipping
-    def polyfit(fit_x,fit_y,err_x,err_y,fit_option):
-        # Number of rejection iterations to perform
-        num_iter = 10
-        for i in range(num_iter):
-            # Calculate the average P2P scatter
-            Nv = len(fit_x)
-            next_values = np.append(fit_y[1:],fit_y[-2])
-            pp_avg = (sum((fit_y-next_values)**2)/Nv)**(0.5)
-            # Do a Linear Polyfit
-            if fit_option == '1':
-                pfit,cov = curve_fit(poly, fit_x, fit_y)#, sigma=err_y)
-                residual = fit_y - poly(fit_x,*pfit)
-            if fit_option == '2':
-                pfit,cov = curve_fit(poly2, fit_x, fit_y, sigma=err_y)
-                residual = fit_y - poly2(fit_x,*pfit)
-            # Do sigma clipping
-            good_idx = np.where(abs(residual) < 2.0*pp_avg)
-            # Redefine the data to be fit
-            fit_x = fit_x[good_idx]
-            fit_y = fit_y[good_idx]
-            err_x = err_x[good_idx]
-            err_y = err_y[good_idx]
-
-        return pfit,cov,fit_x,fit_y,err_x,err_y
-
-
-    # Perform polynomial fit
-    params,covar,goodx,goody,errx,erry = polyfit(ap_mags[gidx],ps_mags[gidx],
-                                                 mag_err[gidx],ps_errs[gidx],'1')
+    # Perform polynomial fit to PSmag versus instrumental mag
+    params,covar,goodx,goody,errx,erry = polyfit(
+        ap_mags[gidx],
+        ps_mags[gidx],
+        mag_err[gidx],
+        ps_errs[gidx],
+        '1'
+    )
     psap_diff = ps_mags[gidx]-ap_mags[gidx]
     psap_diff_err = np.sqrt(ps_errs[gidx]**2 + mag_err[gidx]**2)
-    params2,covar2,goodx2,goody2,errx2,erry2 = polyfit(color[gidx],psap_diff,
-                                                       color_errs[gidx],psap_diff_err,'2')
+
+    # Perform polynomial fit to PS-color versus magnitude difference
+    params2,covar2,goodx2,goody2,errx2,erry2 = polyfit(
+        color[gidx],
+        psap_diff,
+        color_errs[gidx],
+        psap_diff_err,
+        '2'
+    )
 
     # Calculate Magnitude of Target Using Best Fit Lines
     if (filt == 'gp') or (filt == 'rp'):
         PScolor = PSmagg - PSmagr
     elif filt == 'ip':
         PScolor = PSmagr - PSmagi
-    psmag_target = poly(imag_target,*params)
-    psmag_target2 = poly2(PScolor,*params2) + imag_target
+    # psmag_target = poly_linear_fixed(imag_target,*params)
+    psmag_target = poly_linear(PScolor,*params2) + imag_target
 
     # Generate a Best fit Line (for plotting purposes later)
     fitx = np.linspace(min(ap_mags[gidx]),max(ap_mags[gidx]),1000)
     fitx2 = np.linspace(min([min(color[gidx]),PScolor]),
                         max(color[gidx]),1000)
-    fity = poly(fitx,*params)
-    fity2 = poly2(fitx2,*params2)
+    fity = poly_linear_fixed(fitx,*params)
+    fity2 = poly_linear(fitx2,*params2)
 
     # Calculate Magnitude Errors
     xerr = covar[0][0]
-    psmagerr_target = np.sqrt(xerr**2 + ierr_target**2)
+    # psmagerr_target = np.sqrt(xerr**2 + ierr_target**2)
     Zerr = covar2[0][0]
     cerr = covar2[1][1]
-    psmagerr_target2 = np.sqrt(
+    psmagerr_target = np.sqrt(
         Zerr**2 + 
         ierr_target**2 + 
         (-0.01*cerr)**2 + 
@@ -562,7 +537,7 @@ def lco_redux(fits_name, target_coord, comp_coord,
         print('\n           Target Values        ')
         print('------------------------------------')
         print('  Instrumental Mag = {:.2f} +- {:.2f}'.format(imag_target,ierr_target))
-        print('PS1-Calibrated Mag = {:.2f} +- {:.2f}'.format(psmag_target2,psmagerr_target2))
+        print('PS1-Calibrated Mag = {:.2f} +- {:.2f}'.format(psmag_target,psmagerr_target))
         print('              FWHM = {:.2f}"'.format(fwhm_all_med))
         print('               S/N = {:.2f}'.format(sn_target))
         print('            Filter = {}'.format(filt))
