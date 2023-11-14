@@ -1,11 +1,13 @@
 import sys
 import json
+import tqdm
 import requests
 import numpy as np
 
 from scipy.optimize import curve_fit
 from astropy.io import ascii
 from astropy.table import Table
+from astropy.coordinates import EarthLocation
 
 """
 Utility functions used by the LCO_redux script.
@@ -39,29 +41,6 @@ def angle_sep(d1,d2,a1,a2):
     sep = np.degrees(asep)*3600.0 # Arcseconds 
     return sep
 
-
-def progress_bar(count,total,action):
-    """
-    Simple Progress bar. Code from:
-    https://stackoverflow.com/questions/3002085
-
-    Parameters:
-    -----------
-    count: int
-        The current iteration number.
-    total: int
-        The total number of iterations.
-    action: str
-        A description of the action being performed.
-    """
-
-    sys.stdout.write('\r')
-    sys.stdout.write(action)
-    sys.stdout.write("[%-20s] %d%%  %d/%d" % ('='*int((count*20/total)),\
-                                              count*100/total,\
-                                              count,total))
-    sys.stdout.flush()
-    return
 
 def gauss2d_func(M,Z,A,ux,uy,sigx,sigy,theta):
     """
@@ -134,8 +113,86 @@ def gauss2d_fitter(im,width):
     return gfit
 
 
-def ps1_query(ra,dec,rad,save_result=False,save_dir="./",
-    table="mean",release="dr1",format="csv",columns=None,**constraints):
+
+def get_centroid(data,xpix,ypix,fits_name,bw=15,progress=True):
+    """
+    Function to calcuate the centroid of an object
+
+    Parameters:
+    -----------
+    data = image pixel data
+    xpix = list of x-pixel coordinates for objects
+    ypix = list of y-pixel coordinates for objects
+    """
+
+    Ncen = len(xpix)
+    xcentroids = np.zeros(Ncen,dtype=float)
+    ycentroids = np.zeros(Ncen,dtype=float)
+    xstddevs = np.zeros(Ncen,dtype=float)
+    ystddevs = np.zeros(Ncen,dtype=float)
+
+    action = 'Calculating Centroids...'
+    bar_fmt = "%s{l_bar}{bar:40}{r_bar}{bar:-40b}" %action
+    with tqdm.tqdm(total=Ncen, bar_format=bar_fmt) as pbar:
+
+        for k in range(Ncen):
+            xmid,ymid = int(round(xpix[k])),int(round(ypix[k]))
+            xlow,xupp = xmid-bw,xmid+bw
+            ylow,yupp = ymid-bw,ymid+bw
+            dx,dy = xupp-xlow,yupp-ylow
+            data_range = data[ylow:yupp,xlow:xupp]
+            gfit = gauss2d_fitter(data_range,bw*2)
+
+
+            # Check that the fit converged and that the centroid
+            # has not moved too far from its original location. 
+            # If it has, just use the original location from DAOStarFinder
+            if gfit is None:
+                xcentroids[k] = xpix[k]
+                ycentroids[k] = ypix[k]
+                xstddevs[k] = np.nan
+                ystddevs[k] = np.nan
+            else:
+                shift_dist = (np.abs(gfit[2] + xlow - xpix[k])**2 +
+                              np.abs(gfit[3] + ylow - ypix[k])**2)**0.5
+                if shift_dist > 5.0:
+                    xcentroids[k] = xpix[k]
+                    ycentroids[k] = ypix[k]
+                else:
+                    xcentroids[k] = gfit[2] + xlow
+                    ycentroids[k] = gfit[3] + ylow
+                xstddevs[k] = gfit[4]
+                ystddevs[k] = gfit[5]
+
+            pbar.update(1)
+
+    return xcentroids,ycentroids,xstddevs,ystddevs
+
+
+def get_location(sitename):
+
+    if 'McDonald' in sitename:
+        loc = EarthLocation.of_site('mcdonald')
+    elif 'Haleakala' in sitename:
+        loc = EarthLocation.of_site('haleakala')
+    elif 'Cerro Tololo' in sitename:
+        loc = EarthLocation.of_site('ctio')
+    elif 'Siding Spring' in sitename:
+        loc = EarthLocation.of_site('sso')
+    elif 'SAAO' in sitename:
+        loc = EarthLocation.of_site('SAAO')
+    elif 'Tenerife' in sitename:
+        loc = EarthLocation.from_geodetic(
+            lon=20.301111*u.deg,
+            lat=-16.510556*u.deg,
+            height=2390.*u.m)
+
+    return loc
+
+
+def ps1_query(ra, dec, radius=3.0, save_result=False, save_dir=None,
+    save_name=None, table="mean", release="dr1", format="csv",
+    columns=None, constraints=None):
     """
     Function to perform Pan-STARRS1 (PS1) cone search
 
@@ -173,7 +230,13 @@ def ps1_query(ra,dec,rad,save_result=False,save_dir="./",
         columns = [x for x in columns if x and not x.startswith('#')]
 
     # Perform the Cone Search
-    results = ps1cone(ra,dec,radius/3600.,release='dr2',columns=columns,**constraints)
+    results = ps1cone(
+        ra,dec,
+        radius/3600.,
+        release='dr2',
+        columns=columns,
+        constraints=constraints
+    )
     if results == '':
         return None
 
@@ -196,16 +259,20 @@ def ps1_query(ra,dec,rad,save_result=False,save_dir="./",
     ps_tab = apy_tab.to_pandas()  
 
     # Save the query for future use
-    if save_results:
-        ps_tab.to_csv(f'{save_dir}ps_query.csv',index=False)
+    if save_result:
+        if save_dir is None:
+            save_dir = "./"
+        if save_name is None:
+            save_name = "ps_query.csv"
+        ps_tab.to_csv(f'{save_dir}{save_name}',index=False)
 
     return ps_tab
 
 
 
 def ps1cone(ra,dec,radius,table="mean",release="dr1",format="csv",columns=None,
-           baseurl="https://catalogs.mast.stsci.edu/api/v0.1/panstarrs", verbose=False,
-           **kw):
+    baseurl="https://catalogs.mast.stsci.edu/api/v0.1/panstarrs", verbose=False,
+    constraints=None):
     """Do a cone search of the PS1 catalog
     
     Parameters:
@@ -237,13 +304,17 @@ def ps1cone(ra,dec,radius,table="mean",release="dr1",format="csv",columns=None,
         The raw text response from the ps1search function
     """
     
-    data = kw.copy()
+    if constraints is None:
+        data = {}
+    else:
+        data = constraints.copy()
     data['ra'] = ra
     data['dec'] = dec
     data['radius'] = radius
+
     search_result = ps1search(
         table=table,release=release,format=format,columns=columns,
-        baseurl=baseurl, verbose=verbose, **data
+        baseurl=baseurl, verbose=verbose, data=data
     )
 
     return search_result
@@ -252,7 +323,7 @@ def ps1cone(ra,dec,radius,table="mean",release="dr1",format="csv",columns=None,
 
 def ps1search(table="mean",release="dr1",format="csv",columns=None,
     baseurl="https://catalogs.mast.stsci.edu/api/v0.1/panstarrs", verbose=False,
-    **kw):
+    data=None):
     """
     Do a general search of the PS1 catalog (possibly without ra/dec/radius)
     
@@ -270,7 +341,7 @@ def ps1search(table="mean",release="dr1",format="csv",columns=None,
         Base URL for the request
     verbose: bool
         Whether to print info about request
-    **kw: dict
+    data: dict
         Other parameters (e.g., {'nDetections.min':2}) Note this is required!
 
     Returns:
@@ -282,8 +353,7 @@ def ps1search(table="mean",release="dr1",format="csv",columns=None,
     """
     
     # Check for search params
-    data = kw.copy()
-    if not data:
+    if data is None:
         raise ValueError("You must specify some parameters for search")
 
     # Check table/release are valid

@@ -1,11 +1,10 @@
 import os
 import sys
+import tqdm
 import warnings
 import numpy as np
 import pandas as pd
 import astropy.units as u
-import matplotlib.pyplot as plt
-import matplotlib as mpl
 
 from astropy import wcs
 from astropy.io import fits
@@ -15,7 +14,6 @@ from astropy.stats import mad_std
 from astropy.stats import sigma_clipped_stats
 from astropy.visualization import ZScaleInterval
 from astropy.utils.exceptions import AstropyWarning
-from astropy.coordinates import EarthLocation
 from astropy.coordinates import SkyCoord
 from scipy.optimize import curve_fit
 from scipy.stats import gaussian_kde
@@ -24,226 +22,112 @@ from photutils import aperture_photometry
 from photutils import CircularAperture
 from photutils import CircularAnnulus
 
+# Load custom utility functions
 from utils import ps1_query, angle_sep
-# from ps1_tools import ps1cone, angle_sep
+from utils import get_centroid, gauss2d_fitter
+from utils import get_location
 
 """
 Python-based reduction of Las Cumbres Observatory (LCO)
 imaging data from SINISTRO instruments.
 
 Written by Zach Vanderbosch
-Last Updated 11/13/2023
+Last Updated 11/14/2023
 """
 
-# Ignore all warnings
-# warnings.filterwarnings("ignore")
-# Supress annoying Astropy Warning Messages
-# warnings.simplefilter('ignore', category=AstropyWarning)
+# Supress some annoying Astropy Warning Messages
+warnings.simplefilter('ignore', category=AstropyWarning)
 
-# #############################################################
-# ##
-# ##  Progress Bar Code. I got this code from Stack Overflow,
-# ##  "Python to print out status bar and percentage"
-# ##
-# #############################################################
-
-# ## Provide the interation counter (count=int)
-# ## and the action being performed (action=string)
-# def progress_bar(count,total,action):
-#     sys.stdout.write('\r')
-#     sys.stdout.write(action)
-#     sys.stdout.write("[%-20s] %d%%  %d/%d" % ('='*int((count*20/total)),\
-#                                               count*100/total,\
-#                                               count,total))
-#     sys.stdout.flush()
-#     return
-
-# def gauss2d_func(M,Z,A,ux,uy,sigx,sigy,theta):
-#     x,y = M
-#     a = (np.cos(theta)**2/(2*sigx**2)) + \
-#         (np.sin(theta)**2/(2*sigy**2))
-#     b = (np.sin(2*theta)/(2*sigx**2)) - \
-#         (np.sin(2*theta)/(2*sigy**2))
-#     c = (np.sin(theta)**2/(2*sigx**2)) + \
-#         (np.cos(theta)**2/(2*sigy**2))
-#     ta = -a*((x-ux)**2)
-#     tb = -b*(x-ux)*(y-uy)
-#     tc = -c*((y-uy)**2)
-#     return Z + (A * np.exp(ta+tb+tc))
-
-# def gauss2d_fitter(im,width):
-#     dmin = min(im.flatten())
-#     dmax = max(im.flatten())
-#     par_init = [dmin,dmax-dmin,width/2,width/2,3.0,3.0,0.0]
-#     y, x = np.indices(im.shape,dtype=float)
-#     xydata = np.vstack((x.ravel(),y.ravel()))
-#     try:
-#         gfit,_ = curve_fit(gauss2d_func, xydata, im.ravel(), p0=par_init)
-#     except: # For MaxIter and Optimization Errors
-#         gfit = None
-#     return gfit
+# The pixel origin used for WCS transformations
+WCS_ORIGIN = 0
 
 
-# Function used to calcuate the centroid for each object
-def get_centroid(data,xpix,ypix,f,progress=True):
-    """
-    data = image pixel data
-    xpix = list of x-pixel coordinates for objects
-    ypix = list of y-pixel coordinates for objects
-    """
 
-    Ncen = len(xpix)
-    xcentroids = np.zeros(Ncen,dtype=float)
-    ycentroids = np.zeros(Ncen,dtype=float)
-    xstddevs = np.zeros(Ncen,dtype=float)
-    ystddevs = np.zeros(Ncen,dtype=float)
-    bw = 15 # Box width
-
-    if progress:
-        action1 = 'Calculating Centroids...'
-        progress_bar(0,Ncen,action1)
-    for k in range(Ncen):
-        xmid,ymid = int(round(xpix[k])),int(round(ypix[k]))
-        xlow,xupp = xmid-bw,xmid+bw
-        ylow,yupp = ymid-bw,ymid+bw
-        dx,dy = xupp-xlow,yupp-ylow
-        data_range = data[ylow:yupp,xlow:xupp]
-        gfit = gauss2d_fitter(data_range,bw*2)
-
-        # Get Z-Scale Normalization vmin and vmax
-        ZS = ZScaleInterval(nsamples=10000, contrast=0.15, max_reject=0.5, 
-                        min_npixels=5, krej=2.5, max_iterations=5)
-        vmin,vmax = ZS.get_limits(data_range)
-
-
-        # Check that the fit converged and that the centroid
-        # has not moved too far from its original location. 
-        # If it has, just use the original location from DAOStarFinder
-        if gfit is None:
-            xcentroids[k] = xpix[k]
-            ycentroids[k] = ypix[k]
-            xstddevs[k] = np.nan
-            ystddevs[k] = np.nan
-        else:
-            shift_dist = (np.abs(gfit[2] + xlow - xpix[k])**2 +
-                          np.abs(gfit[3] + ylow - ypix[k])**2)**0.5
-            if shift_dist > 5.0:
-                xcentroids[k] = xpix[k]
-                ycentroids[k] = ypix[k]
-            else:
-                xcentroids[k] = gfit[2] + xlow
-                ycentroids[k] = gfit[3] + ylow
-            xstddevs[k] = gfit[4]
-            ystddevs[k] = gfit[5]
-        if progress:
-            progress_bar(k+1,Ncen,action1)
-
-        # Save plot of target's centroid location
-        if (Ncen > 1) & (k == 0) & (gfit is not None):
-            figt = plt.figure('t')
-            tx = figt.add_subplot(111)
-            tx.imshow(data_range,vmin=vmin,vmax=vmax)
-            tx.plot(xpix[k]-xlow,ypix[k]-ylow,ls='None',
-                    marker='x',c='r',mew=2,ms=5,label='original')
-            tx.plot(gfit[2],gfit[3],ls='None',
-                    marker='+',c='b',mew=2,ms=6,label='re-calculated')
-            tx.plot(xcentroids[k]-xlow,ycentroids[k]-ylow,ls='None',
-                    marker='o',mfc='None',mec='k',mew=2,ms=10,label='adopted')
-            tx.legend(fontsize=10)
-            plt.savefig('{}_target_centroid.pdf'.format(f.split(".")[0]),bbox_inches='tight')
-            plt.close()
-
-    return xcentroids,ycentroids,xstddevs,ystddevs
-
-#########################################################
-#########################################################
-
-def lco_redux(fits_name, target_coord, comp_coord, query_constraints=None):
+def lco_redux(fits_name, target_coord, comp_coord, 
+    target_query_constraints=None, target_query_save=False, target_query_dir=None, 
+    target_query_name=None, target_query_format='csv',full_query_constraints=None, 
+    full_query_save=False, full_query_dir=None, full_query_name=None, 
+    full_query_format='csv', phot_save=False, phot_dir=None, phot_name=None, 
+    verbose=False):
 
     # RA-Dec Coords of Target & Comps in ProEM Frame
-    target = [132.693196,19.939404]
-    comp1 = [132.6966642,19.9262534]
+    target = [target_coord.ra.deg,target_coord.dec.deg]
+    comp1 = [comp_coord.ra.deg,comp_coord.dec.deg]
 
-    # Perform Pan-STARRS1 query to get source mag
-    
-
-
-    # Pan-STARRS1 Magnitudes of Target
-    PSmagg = 20.0764
-    PSmagr = 19.2666
-    PSmagi = 18.9730
-    PSmagg_err = 0.0556
-    PSmagr_err = 0.0063
-    PSmagi_err = 0.0223
-
-    print('Performing the Pan-STARRS Query...')
-    # results = ps1cone(ra_center,dec_center,radius,release='dr2',columns=columns,**constraints)
-    results = ps1_query(
-        ra_center,
-        dec_center,
-        radius,
+    # Perform Pan-STARRS1 query to get source magnitudes
+    print('Performing Target Pan-STARRS Query...',end='')
+    ps1_target = ps1_query(
+        target[0],
+        target[1],
+        radius=3.0, # arcsec
         release='dr2',
         table='mean',
         columns=None,
-        **constraints
+        format=target_query_format,
+        constraints=target_query_constraints,
+        save_result=target_query_save,
+        save_dir=target_query_dir,
+        save_name=target_query_name
     )
-    print('Complete...\n')
+    print('Complete\n')
+
+
+    # Get Pan-STARRS1 Magnitudes of Target
+    if ps1_target is None:
+        raise(f'Unable to Retrieve Pan-STARRS1 Magnitudes for Target at RA = {target[0]:.6f}, Dec = {target[1]:.6f}')
+    else: 
+        PSmagg = ps1_target.gMeanPSFMag.iloc[0]
+        PSmagr = ps1_target.rMeanPSFMag.iloc[0]
+        PSmagi = ps1_target.iMeanPSFMag.iloc[0]
+        PSmagg_err = ps1_target.gMeanPSFMagErr.iloc[0]
+        PSmagr_err = ps1_target.rMeanPSFMagErr.iloc[0]
+        PSmagi_err = ps1_target.iMeanPSFMagErr.iloc[0]
 
     # Get Data & Header Info for first image
-    hdu0 = fits.open(fits_name)
-    image0 = hdu0[1].data
-    header0 = hdu0[1].header
-    hdu0.close()
+    with fits.open(fits_name) as hdul:
+        image = hdul[1].data
+        header = hdul[1].header
+
 
     # Get WCS and other info from the first image header
-    w0 = wcs.WCS(header0)
-    wpix0 = w0.wcs_world2pix(np.array([target]),1)
-    site = header0['SITE']
-    tele = header0['TELESCOP']
-    date = header0['DATE-OBS']
-    filt = header0['FILTER']
-    texp = header0['EXPTIME']
-    obra = header0['CAT-RA'].replace(":","")
-    obdc = header0['CAT-DEC'].replace(":","")
-    imcols = header0['NAXIS1']
-    imrows = header0['NAXIS2']
-    linlimit = header0['MAXLIN'] # Linearity/Saturation Limit
-    timeobs = header0['DATE-OBS']
-    platescale = header0['PIXSCALE']
-    obj_name = 'SDSSJ{}{}'.format(obra[0:4],obdc[0:5])
+    w = wcs.WCS(header)
+    site = header['SITE']
+    tele = header['TELESCOP']
+    date = header['DATE-OBS']
+    filt = header['FILTER']
+    texp = header['EXPTIME']
+    obra = header['CAT-RA'].replace(":","")
+    obdc = header['CAT-DEC'].replace(":","")
+    imcols = header['NAXIS1']
+    imrows = header['NAXIS2']
+    linlimit = header['MAXLIN'] # Linearity/Saturation Limit
+    timeobs = header['DATE-OBS']
+    platescale = header['PIXSCALE']
+    siteid = header['SITEID']
+    airmass = header['AIRMASS']
+    humidity = header['WMSHUMID']
+    temp = header['WMSTEMP']*1.8 + 32.0  # Converted to Degree F
+    wind = header['WINDSPEE']/1.6 # Converted to mph instead of kph
+    sky = header['WMSSKYBR'] # Sky brightness in mag/arcsec^2
+    moonfrac = header['MOONFRAC']
+    moondist = header['MOONDIST']
+    moonalt = header['MOONALT']
 
-    # Define Astropy coordinate object for the target
-    if 'McDonald' in site:
-        loc = EarthLocation.of_site('mcdonald')
-    elif 'Haleakala' in site:
-        loc = EarthLocation.of_site('haleakala')
-    elif 'Cerro Tololo' in site:
-        loc = EarthLocation.of_site('ctio')
-    elif 'Siding Spring' in site:
-        loc = EarthLocation.of_site('sso')
-    elif 'SAAO' in site:
-        loc = EarthLocation.of_site('SAAO')
-    elif 'Tenerife' in site:
-        loc = EarthLocation.from_geodetic(lon=20.301111*u.deg,
-                                          lat=-16.510556*u.deg,
-                                          height=2390.*u.m)
-    tcoord = SkyCoord(target[0]*u.deg,target[1]*u.deg,frame="icrs")
+    # Get pixel coordinates of target and comp
+    targ_pixcoord = w.wcs_world2pix([target],WCS_ORIGIN)
+    comp_pixcoord = w.wcs_world2pix([comp1],WCS_ORIGIN)
 
-
-    # Perform an Initial 2DGaussian Fit to Target for FWHM estimate
-    targ_pixcoord = w0.wcs_world2pix([target],1)
-    comp_pixcoord = w0.wcs_world2pix([comp1],1)
-    _,_,xsig_init,ysig_init = get_centroid(image0,comp_pixcoord[:,0],
-                                           comp_pixcoord[:,1],fits_name,progress=False)
+    # Perform an Initial 2DGaussian Fit to Copmarison Star for FWHM estimate
+    _,_,xsig_init,ysig_init = get_centroid(
+        image,
+        comp_pixcoord[:,0],
+        comp_pixcoord[:,1],
+        fits_name,
+        progress=False
+    )
     fwhm_init = abs(2.3548*(xsig_init[0] + ysig_init[0]) / 2.0)
     if fwhm_init > 15:
         fwhm_init = 6.0
-
-
-    # Get Z-Scale Normalization vmin and vmax
-    ZS = ZScaleInterval(nsamples=10000, contrast=0.15, max_reject=0.5, 
-                        min_npixels=5, krej=2.5, max_iterations=5)
-    vmin0,vmax0 = ZS.get_limits(image0)
 
 
     # Find sources in first frame with DAOfind and sort 
@@ -258,13 +142,13 @@ def lco_redux(fits_name, target_coord, comp_coord, query_constraints=None):
         return idx,match
 
     # Create Mask Regions to block off Bright Stars
-    mask = np.zeros_like(image0, dtype=bool)
+    mask = np.zeros_like(image, dtype=bool)
 
 
     # Get sources with DAOfind and sort
     print('\nIdentifying Sources in LCO Image...')
-    bkgmed = np.nanmedian(image0.flatten()) 
-    bkgMAD = mad_std(image0)  
+    bkgmed = np.nanmedian(image.flatten()) 
+    bkgMAD = mad_std(image)  
     # daofind0 = DAOStarFinder(fwhm=1.0*fwhm_init,
     #                          threshold=bkgmed+3.0*bkgMAD,
     #                          sharphi=0.6,
@@ -273,7 +157,7 @@ def lco_redux(fits_name, target_coord, comp_coord, query_constraints=None):
                              threshold=0.5*bkgmed,
                              sharphi=0.6,
                              peakmax=linlimit)  
-    sources0 = daofind0(image0, mask=mask)
+    sources0 = daofind0(image, mask=mask)
     if sources0 is None: # No sources found
         print('No Sources Detected!')
         return
@@ -289,7 +173,7 @@ def lco_redux(fits_name, target_coord, comp_coord, query_constraints=None):
     ysources = df_sources0['ycentroid'].values
 
     idx_step = 1
-    target_idx,match = get_object_idx(wpix0[0][0],wpix0[0][1],xsources,ysources,idx_step)
+    target_idx,match = get_object_idx(targ_pixcoord[0][0],targ_pixcoord[0][1],xsources,ysources,idx_step)
     if match:
         target_xcoord = xsources[target_idx]
         target_ycoord = ysources[target_idx]
@@ -311,35 +195,26 @@ def lco_redux(fits_name, target_coord, comp_coord, query_constraints=None):
     # Calculate the World Coordinates for each saved object
     Nobj = len(object_coords)
     print('{} Sources Identified'.format(Nobj))
-    object_world_coords = w0.wcs_pix2world(object_coords,1)
+    object_world_coords = w.wcs_pix2world(object_coords,WCS_ORIGIN)
 
 
-    #########################################################
-    ## Perform a Pan-STARRS Query which covers all detected
-    ## sources in the image, or load a previously saved query. 
-    ## NOTE: Performing a single query for each source is slow!
 
-    # Create an Empty DataFrame
-    columns = """objID,raMean,decMean,nDetections,ng,nr,ni,nz,ny,
-            gMeanPSFMag,gMeanPSFMagErr,rMeanPSFMag,rMeanPSFMagErr,
-            iMeanPSFMag,iMeanPSFMagErr,zMeanPSFMag,zMeanPSFMagErr,
-            yMeanPSFMag,yMeanPSFMagErr,gMeanKronMag,gMeanKronMagErr,
-            rMeanKronMag,rMeanKronMagErr,iMeanKronMag,iMeanKronMagErr,
-            zMeanKronMag,zMeanKronMagErr,yMeanKronMag,yMeanKronMagErr""".split(',')
-    columns = [x.strip() for x in columns]
-    columns = [x for x in columns if x and not x.startswith('#')]
-    tab = pd.DataFrame(columns=columns+["sep"])
+    """ Perform of Load Pan-STARRS Query """
+
 
     # First Check for a Previously Saved Query
-    qpath = '/home/zachvanderbosch/data/object/ZTF/ztf_data/WDJ0850+1956/LCO/'
-    if os.path.isfile(qpath + 'ps_query.csv'):
+    if full_query_dir is None:
+        full_query_dir = "./"
+    if full_query_name is None:
+        full_query_name = "ps_query.csv"
+    if os.path.isfile(f'{full_query_dir}{full_query_name}'):
         print('\nLoading Pan-STARRS Query...\n')
-        ps_tab = pd.read_csv(qpath + 'ps_query.csv')
+        ps_tab = pd.read_csv(f'{full_query_dir}{full_query_name}')
     else: # If no query, perform a new one 
 
         # Query Constraints
-        if query_constraints is None:
-            query_constraints = {
+        if full_query_constraints is None:
+            full_query_constraints = {
                 'ng.gt':3,
                 'nr.gt':3,
                 'ni.gt':3,
@@ -350,129 +225,123 @@ def lco_redux(fits_name, target_coord, comp_coord, query_constraints=None):
             }
 
         # Define central RA/Dec of the image
-        center = w0.wcs_pix2world([[float(imcols)/2,float(imrows)/2]],1)
+        center = w.wcs_pix2world([[float(imcols)/2,float(imrows)/2]],WCS_ORIGIN)
         ra_center = center[0][0]
         dec_center = center[0][1]
-        radius = 18.0/60.0 # 18 arcmin radius
-        print('\nSearch Radius = {:.2f} arcmin'.format(radius*60.0))
+        radius = 18.0*60. # 18 arcmin radius
+        print('\nSearch Radius = {:.2f} arcmin'.format(radius/60))
 
         # Perform the Cone Search
-        print('Performing the Pan-STARRS Query...')
-        # results = ps1cone(ra_center,dec_center,radius,release='dr2',columns=columns,**constraints)
-        results = ps1_query(
+        print('Performing the Pan-STARRS Query...',end='')
+        ps_tab = ps1_query(
             ra_center,
             dec_center,
-            radius,
+            radius=radius, # arcsec
             release='dr2',
             table='mean',
             columns=None,
-            **constraints
+            format=full_query_format,
+            constraints=full_query_constraints,
+            save_result=full_query_save,
+            save_dir=full_query_dir,
+            save_name=full_query_name
         )
-        print('Complete...\n')
+        print('Complete\n')
 
-        # Convert Results into an Astropy Table, improve formatting,
-        # and then create a Pandas Table
-        apy_tab = ascii.read(results)
-        for f in 'grizy':
-            col1 = f+'MeanPSFMag'
-            col2 = f+'MeanPSFMagErr'
-            try:
-                apy_tab[col1].format = ".4f"
-                apy_tab[col1][apy_tab[col1] == -999.0] = np.nan
-            except KeyError:
-                print("{} not found".format(col1))
-            try:
-                apy_tab[col2].format = ".4f"
-                apy_tab[col2][apy_tab[col2] == -999.0] = np.nan
-            except KeyError:
-                print("{} not found".format(col2))
-        ps_tab = apy_tab.to_pandas()  
 
-        # Save the query for future use
-        ps_tab.to_csv(qpath+'ps_query.csv',index=False)
 
+    """ Match Detected Sources to Pan-STARRS Sources """
+
+
+    # Set up the progress bar
+    action0 = 'Matching Objects to PS1...'
+    bar_fmt = "%s{l_bar}{bar:40}{r_bar}{bar:-40b}" %action0
 
     # Iterate Through Each Object and Find Matches
-    action0 = 'Matching Objects to Pan-STARRS Photometry...' # Progress bar message
-    progress_bar(0,len(object_world_coords),action0) # Initiate the progress bar
+    Ncheck = len(object_world_coords)
+    matched_entries = []
     object_coords_keep = []
-    for i,c in enumerate(object_world_coords):
+    with tqdm.tqdm(total=Ncheck, bar_format=bar_fmt) as pbar:
+        for i,c in enumerate(object_world_coords):
 
-        # Get RA/Dec for the object
-        ra = c[0]
-        dec = c[1]
+            # Get RA/Dec for the object
+            ra = c[0]
+            dec = c[1]
 
-        # Get subset of ps_tab with objects within ~5 arcseconds
-        # of the chosen coordinates for each loop
-        ps_tab_subset = ps_tab[(ps_tab.raMean < ra+0.00139) & 
-                               (ps_tab.raMean > ra-0.00139) &
-                               (ps_tab.decMean < dec+0.00139) & 
-                               (ps_tab.decMean > dec-0.00139)].copy(deep=True)
+            # Get subset of ps_tab with objects within ~5 arcseconds
+            # of the chosen coordinates for each loop
+            ps_tab_subset = ps_tab[
+                (ps_tab.raMean < ra+0.00139) & 
+                (ps_tab.raMean > ra-0.00139) &
+                (ps_tab.decMean < dec+0.00139) & 
+                (ps_tab.decMean > dec-0.00139)
+            ].copy(deep=True)
 
-        # If No matches, skip the object
-        if len(ps_tab_subset) == 0:
-            progress_bar(i+1,len(object_world_coords),action0)
-            continue
-
-
-        # Find Separations Between Source and Panstarrs Objects
-        all_seps = []
-        for r,d in zip(ps_tab_subset.raMean.values, ps_tab_subset.decMean.values):
-            sep = angle_sep(dec,d,ra,r)
-            all_seps.append(sep)
-        ps_tab_subset['sep'] = all_seps
-
-        # If a Pan-Starrs object exists within 1.5 arcsec, keep it
-        if min(all_seps) < 1.5:
-            # First Check that the object is not a galaxy using PSF-Kron Magnitudes
-            ps_tab_matched = ps_tab_subset[ps_tab_subset.sep == min(ps_tab_subset.sep)]
-            star_gal_check = ps_tab_matched.iMeanPSFMag - ps_tab_matched.iMeanKronMag
-            if star_gal_check.values[0] > 0.01:
-                progress_bar(i+1,len(object_world_coords),action0)
+            # If No matches, skip the object
+            if len(ps_tab_subset) == 0:
+                pbar.update(1)
                 continue
-            else:
-                if len(ps_tab_matched) > 1:
+
+            # Find Separations Between Source and Panstarrs Objects
+            all_seps = []
+            for r,d in zip(ps_tab_subset.raMean.values, ps_tab_subset.decMean.values):
+                sep = angle_sep(dec,d,ra,r)
+                all_seps.append(sep)
+            ps_tab_subset['sep'] = all_seps
+
+            # If a Pan-Starrs object exists within 1.5 arcsec, keep it
+            if min(all_seps) < 1.5:
+
+                # First Check that the object is not a galaxy using PSF-Kron Magnitudes
+                ps_tab_matched = ps_tab_subset[ps_tab_subset.sep == min(ps_tab_subset.sep)]
+                star_gal_check = ps_tab_matched.iMeanPSFMag - ps_tab_matched.iMeanKronMag
+
+                if star_gal_check.values[0] > 0.01:
+                    pbar.update(1)
                     continue
                 else:
-                    tab = tab.append(ps_tab_matched,ignore_index=True)
-                    object_coords_keep.append(object_coords[i])
+                    if len(ps_tab_matched) > 1:
+                        pbar.update(1)
+                        continue
+                    else:
+                        matched_entries.append(ps_tab_matched)
+                        object_coords_keep.append(object_coords[i])
 
-        # Update Progress Bar
-        progress_bar(i+1,len(object_world_coords),action0)
+            # Update Progress Bar
+            pbar.update(1)
 
+    # Combine matched results into new DataFrame
+    tab = pd.concat(matched_entries,ignore_index=True)
     Nobj_keep = len(tab)
     print('\n{} out of {} Objects Matched\n'.format(Nobj_keep,Nobj))
     if Nobj_keep < 50: # Too few sources for calibration
-        return
+        return None
 
 
-    # #########################################################
-    # #########################################################
-    # ## Perform the Aperture Photometry on Sources 
-    # ## with Matched PS1 Photometry
+
+    """ Calculate Centroids for all Matched Sources """
 
     # Get pixel coordinates of objects and find centroids
     wpix = np.asarray(object_coords_keep)
-    xc,yc,_,_ = get_centroid(image0,wpix[:,0],wpix[:,1],fits_name,progress=True)
+    xc,yc,_,_ = get_centroid(image,wpix[:,0],wpix[:,1],fits_name,progress=True)
 
 
-    # fig = plt.figure('test',figsize=(8,8))
-    # ax = fig.add_subplot(111)
 
-    # ax.imshow(image0, vmin=vmin0,vmax=vmax0,cmap='Greys_r')
-    # ax.plot(xsources,ysources,ls='None',marker='o',mfc='None',mec='r',ms=8)
-    # ax.plot(xc,yc,ls='None',marker='s',mfc='None',mec='b',ms=8)
-    # plt.show()
+    """ Estimate Mode of FWHM Distribution for Matched Sources """
 
-    # Calculate the FWHM for Aperture Selection
-    # Define the Gaussian function for fitting the stellar profile
+
     def gaussian(x, A, sigma):
+        """Simple Gaussian Function 
+        """
         return A*np.exp(-(x)**2/(2.*sigma**2))
 
-    # Define function that returns the distance, in pixels, between two points:
     def distance(x1,y1,x2,y2):
+        """Calculate pixel distance between two sources
+        """
         return np.sqrt((x1-x2)**2.+(y1-y2)**2.)
 
+
+    # Calculate FWHM for all sources
     fwhm_all = np.zeros(Nobj_keep)
     print('\n\nDetermining Aperture Size from FWHM...')
     for i,coord in enumerate(object_coords_keep):
@@ -485,7 +354,7 @@ def lco_redux(fits_name, target_coord, comp_coord, query_constraints=None):
         for x in np.arange(round(x0)-pdist,round(x0)+pdist):
             for y in np.arange(round(y0)-pdist,round(y0)+pdist):
                 dist.append(distance(x,y,x0,y0))
-                pval.append(image0[int(y),int(x)])
+                pval.append(image[int(y),int(x)])
 
         p0=[10000.,1.] #initial guesses of height and sigma
         popt,_  = curve_fit(gaussian,dist,np.array(pval)-bkgmed,p0=p0,maxfev=10000)
@@ -505,15 +374,11 @@ def lco_redux(fits_name, target_coord, comp_coord, query_constraints=None):
     bw_fwhm = fwhm_span / bin_num
 
     # Estimate the Mode of the FWHM distribution with KDE
-    fwhm_grid = np.linspace(0.01,5.0,5000)
+    fwhm_grid = np.arange(0.01,10.0,0.01)
     kde_fwhm = gaussian_kde(fwhm_all[fwhm_idx], 
                  bw_method=bw_fwhm/fwhm_all[fwhm_idx].std(ddof=1))
     kdevals_fwhm = kde_fwhm.evaluate(fwhm_grid)
     fwhm_mode = fwhm_grid[kdevals_fwhm == max(kdevals_fwhm)][0]
-
-    # Redefine the FWHM Median & MAD-STD values with the "good" dataset
-    fwhm_med = np.median(fwhm_all[fwhm_idx])
-    fwhm_madstd = mad_std(fwhm_all[fwhm_idx])
 
     # Define Aperture with radius = FWHM (in pixels)
     ap_choice = fwhm_mode/platescale
@@ -521,21 +386,23 @@ def lco_redux(fits_name, target_coord, comp_coord, query_constraints=None):
     print('Aperture Radius (arcsec) = {:.2f}'.format(ap_choice*platescale))
 
 
+
+    """ Perform the Aperture Photometry on Matched Sources """
+
+
     # Define the apertures and sky annuli and perform aperture photometry
     print('\nPerforming Aperture Photometry...')
     ap_phot = np.zeros(len(object_coords_keep))
     positions = [(x,y) for x,y in zip(xc,yc)]
     aperture = CircularAperture(positions, r=ap_choice)
-    #annulus = CircularAnnulus(positions, r_in=32., r_out=48.)
     annulus = CircularAnnulus(positions, r_in=20., r_out=30.)
-    #annulus = CircularAnnulus(positions, r_in=10., r_out=20.)
-    phot_table = aperture_photometry(image0, [aperture,annulus])
+    phot_table = aperture_photometry(image, [aperture,annulus])
 
     # Calculate the median sky annulus counts
     annulus_masks = annulus.to_mask(method='center')
     bkg_median = np.zeros(len(annulus_masks))
     for i,mask in enumerate(annulus_masks):
-        annulus_data = mask.multiply(image0)
+        annulus_data = mask.multiply(image)
         try:
             annulus_data_1d = annulus_data[mask.data > 0]
         except:
@@ -544,8 +411,6 @@ def lco_redux(fits_name, target_coord, comp_coord, query_constraints=None):
         _,median,_ = sigma_clipped_stats(annulus_data_1d)
         bkg_median[i] = median
 
-
-    #bkg_sum = phot_table['aperture_sum_1'] * (aperture.area/annulus.area)
     bkg_sum = bkg_median * aperture.area
     ap_phot[:] = phot_table['aperture_sum_0'] - bkg_sum
     ap_mags = 25.0 - 2.5*np.log10(ap_phot)
@@ -554,7 +419,7 @@ def lco_redux(fits_name, target_coord, comp_coord, query_constraints=None):
     print('Average Background: {:.3f} c/pix'.format(phot_table['aperture_sum_1'][0]/annulus.area))
 
     # Calculate Photometry Errors & Signal-to-Noise
-    readn = header0['RDNOISE'] # Read Noise
+    readn = header['RDNOISE'] # Read Noise
     darkn = 0.002 # Dark Noise (e-/pixel/s)
     phot_err = np.sqrt(ap_phot + bkg_sum + (0.002*texp+readn**2)*aperture.area)
     phot_sn = ap_phot/phot_err
@@ -571,8 +436,7 @@ def lco_redux(fits_name, target_coord, comp_coord, query_constraints=None):
     sn_target = phot_sn[0]
 
 
-    ##################################################
-    ## Fit a Linear Model to the Mag v. Mag trend
+    """ Fit a Linear Model to the Mag v. Mag trend """
 
     # Choose Relevant PS Magnitudes Based on LCO filter
     if filt == 'gp':
@@ -672,67 +536,77 @@ def lco_redux(fits_name, target_coord, comp_coord, query_constraints=None):
     psmagerr_target = np.sqrt(xerr**2 + ierr_target**2)
     Zerr = covar2[0][0]
     cerr = covar2[1][1]
-    psmagerr_target2 = np.sqrt(Zerr**2 + 
-                               ierr_target**2 + 
-                               (-0.01*cerr)**2 + 
-                               (params2[1]*PSmagg_err)**2 + 
-                               (params2[1]*PSmagr_err)**2)
+    psmagerr_target2 = np.sqrt(
+        Zerr**2 + 
+        ierr_target**2 + 
+        (-0.01*cerr)**2 + 
+        (params2[1]*PSmagg_err)**2 + 
+        (params2[1]*PSmagr_err)**2
+    )
 
 
-    # Convert Observation Time to MJD and BJD Formats
-    # Calculate BJD & MJD times using Astropy Time & TimeDelta objects
+
+    """ Apply Barycentric Time Corrections """
+
+    loc = get_location(site)
     t = Time(timeobs, format='isot', scale='utc',location=loc)  # UTC Times
-    ltt_bary = t.light_travel_time(tcoord)  # Light travel time to barycenter
+    ltt_bary = t.light_travel_time(target_coord)  # Light travel time to barycenter
     tmjd = t.mjd                            # MJD times
     tbjd = t.tdb.jd + ltt_bary.jd           # Barycentric times (rescaled UTC + LTT)
 
 
-    # Print out some info
-    print('\n           Target Values        ')
-    print('------------------------------------')
-    print(' Instrumental Mag = {:.2f} +- {:.2f}'.format(imag_target,ierr_target))
-    print('  Pan-STARRS Mag1 = {:.2f} +- {:.2f}'.format(psmag_target,psmagerr_target))
-    print('  Pan-STARRS Mag2 = {:.2f} +- {:.2f}'.format(psmag_target2,psmagerr_target2))
-    print('             FWHM = {:.2f}"'.format(fwhm_all_med))
-    print('              S/N = {:.2f}'.format(sn_target))
-    print('           Filter = {}'.format(filt))
-    print('             Texp = {:.3f}'.format(texp))
-    print('          UT Date = {}'.format(timeobs[0:10]))
-    print('              MJD = {:.7f}'.format(tmjd))
-    print('              BJD = {:.7f}'.format(tbjd))
-    print('        Mode(g-r) = {:.4f}'.format(mode_color))
-    print('   Zero-Point Mag = {:.4f}'.format(params2[0]))
-    print('       Color Term = {:.4f}'.format(params2[1]))
+
+    """ Print out the Results """
+
+    if verbose:
+        print('\n           Target Values        ')
+        print('------------------------------------')
+        print('  Instrumental Mag = {:.2f} +- {:.2f}'.format(imag_target,ierr_target))
+        print('PS1-Calibrated Mag = {:.2f} +- {:.2f}'.format(psmag_target2,psmagerr_target2))
+        print('              FWHM = {:.2f}"'.format(fwhm_all_med))
+        print('               S/N = {:.2f}'.format(sn_target))
+        print('            Filter = {}'.format(filt))
+        print('              Texp = {:.3f}'.format(texp))
+        print('           UT Date = {}'.format(timeobs[0:10]))
+        print('               MJD = {:.7f}'.format(tmjd))
+        print('               BJD = {:.7f}'.format(tbjd))
+        print('         Mode(g-r) = {:.4f}'.format(mode_color))
+        print('    Zero-Point Mag = {:.4f}'.format(params2[0]))
+        print('        Color Term = {:.4f}'.format(params2[1]))
 
 
-    # Save useful data into a csv file
-    siteid = header0['SITEID']
-    airmass = header0['AIRMASS']
-    humidity = header0['WMSHUMID']
-    temp = header0['WMSTEMP']*1.8 + 32.0  # Converted to Degree F
-    wind = header0['WINDSPEE']/1.6 # Converted to mph instead of kph
-    sky = header0['WMSSKYBR'] # Sky brightness in mag/arcsec^2
-    moonfrac = header0['MOONFRAC']
-    moondist = header0['MOONDIST']
-    moonalt = header0['MOONALT']
-    csv_dat = {'mjd':tmjd,'bjd':tbjd,'date':timeobs.split("T")[0],
-               'time':timeobs.split("T")[1],'filter':filt,'texp':texp,
-               'mag':psmag_target,'magerr':psmagerr_target,
-               'Zp':params2[0],'Zp_err':Zerr,'cterm':params2[1],
-               'cterm_err':cerr,'Nfit':len(goodx2),'sn':sn_target,
-               'fwhm':fwhm_all_med,'aper_rad (pix)':ap_choice,
-               'airmass':airmass,'site_id':siteid,
-               'telescope':tele,'temp':temp,'humidity':humidity,
-               'wind':wind,'sky':sky,'moonfrac':moonfrac,
-               'moondist':moondist,'moonalt':moonalt}
-    csv_out = pd.DataFrame(csv_dat,index=[0])
-    csv_name = 'phot_file_{}.csv'.format(fits_name.split("/")[-1].split(".")[0])
-    csv_out.to_csv(csv_name,index=False)
 
+    """ Combine Results and Metadata in DataFrame and Save to File """
+
+
+    phot_dat = {
+        'mjd':tmjd,'bjd':tbjd,'date':timeobs.split("T")[0],
+        'time':timeobs.split("T")[1],'filter':filt,'texp':texp,
+        'mag':psmag_target,'magerr':psmagerr_target,
+        'Zp':params2[0],'Zp_err':Zerr,'cterm':params2[1],
+        'cterm_err':cerr,'Nfit':len(goodx2),'sn':sn_target,
+        'fwhm':fwhm_mode,'aper_rad (pix)':ap_choice,
+        'airmass':airmass,'site_id':siteid,
+        'telescope':tele,'temp':temp,'humidity':humidity,
+        'wind':wind,'sky':sky,'moonfrac':moonfrac,
+        'moondist':moondist,'moonalt':moonalt
+    }
+    phot_dat = pd.DataFrame(phot_dat,index=[0])
+
+
+    # Save results
+    if phot_save:
+        if phot_dir is None:
+            phot_dir = "./"
+        if phot_name is None:
+            phot_name = '{}_phot.csv'.format(fits_name.split("/")[-1].split(".")[0])
+
+        phot_name = f'{phot_dir}{phot_name}'
+        phot_dat.to_csv(phot_name,index=False)
 
     print("\nFinished! \n")
 
-    return
+    return phot_dat
 
 
 
