@@ -28,7 +28,9 @@ from photutils.centroids import centroid_2dg
 from photutils import aperture_photometry
 from photutils import CircularAperture
 from photutils import CircularAnnulus
-from ps1_tools import ps1cone, angle_sep
+
+from utils import ps1_query, angle_sep
+# from ps1_tools import ps1cone, angle_sep
 
 """
 Python-based reduction of Las Cumbres Observatory (LCO)
@@ -42,48 +44,48 @@ Last Updated 11/13/2023
 #warnings.simplefilter("error", OptimizeWarning)
 warnings.filterwarnings("ignore")
 
-#############################################################
-##
-##  Progress Bar Code. I got this code from Stack Overflow,
-##  "Python to print out status bar and percentage"
-##
-#############################################################
+# #############################################################
+# ##
+# ##  Progress Bar Code. I got this code from Stack Overflow,
+# ##  "Python to print out status bar and percentage"
+# ##
+# #############################################################
 
-## Provide the interation counter (count=int)
-## and the action being performed (action=string)
-def progress_bar(count,total,action):
-    sys.stdout.write('\r')
-    sys.stdout.write(action)
-    sys.stdout.write("[%-20s] %d%%  %d/%d" % ('='*int((count*20/total)),\
-                                              count*100/total,\
-                                              count,total))
-    sys.stdout.flush()
-    return
+# ## Provide the interation counter (count=int)
+# ## and the action being performed (action=string)
+# def progress_bar(count,total,action):
+#     sys.stdout.write('\r')
+#     sys.stdout.write(action)
+#     sys.stdout.write("[%-20s] %d%%  %d/%d" % ('='*int((count*20/total)),\
+#                                               count*100/total,\
+#                                               count,total))
+#     sys.stdout.flush()
+#     return
 
-def gauss2d_func(M,Z,A,ux,uy,sigx,sigy,theta):
-    x,y = M
-    a = (np.cos(theta)**2/(2*sigx**2)) + \
-        (np.sin(theta)**2/(2*sigy**2))
-    b = (np.sin(2*theta)/(2*sigx**2)) - \
-        (np.sin(2*theta)/(2*sigy**2))
-    c = (np.sin(theta)**2/(2*sigx**2)) + \
-        (np.cos(theta)**2/(2*sigy**2))
-    ta = -a*((x-ux)**2)
-    tb = -b*(x-ux)*(y-uy)
-    tc = -c*((y-uy)**2)
-    return Z + (A * np.exp(ta+tb+tc))
+# def gauss2d_func(M,Z,A,ux,uy,sigx,sigy,theta):
+#     x,y = M
+#     a = (np.cos(theta)**2/(2*sigx**2)) + \
+#         (np.sin(theta)**2/(2*sigy**2))
+#     b = (np.sin(2*theta)/(2*sigx**2)) - \
+#         (np.sin(2*theta)/(2*sigy**2))
+#     c = (np.sin(theta)**2/(2*sigx**2)) + \
+#         (np.cos(theta)**2/(2*sigy**2))
+#     ta = -a*((x-ux)**2)
+#     tb = -b*(x-ux)*(y-uy)
+#     tc = -c*((y-uy)**2)
+#     return Z + (A * np.exp(ta+tb+tc))
 
-def gauss2d_fitter(im,width):
-    dmin = min(im.flatten())
-    dmax = max(im.flatten())
-    par_init = [dmin,dmax-dmin,width/2,width/2,3.0,3.0,0.0]
-    y, x = np.indices(im.shape,dtype=float)
-    xydata = np.vstack((x.ravel(),y.ravel()))
-    try:
-        gfit,_ = curve_fit(gauss2d_func, xydata, im.ravel(), p0=par_init)
-    except: # For MaxIter and Optimization Errors
-        gfit = None
-    return gfit
+# def gauss2d_fitter(im,width):
+#     dmin = min(im.flatten())
+#     dmax = max(im.flatten())
+#     par_init = [dmin,dmax-dmin,width/2,width/2,3.0,3.0,0.0]
+#     y, x = np.indices(im.shape,dtype=float)
+#     xydata = np.vstack((x.ravel(),y.ravel()))
+#     try:
+#         gfit,_ = curve_fit(gauss2d_func, xydata, im.ravel(), p0=par_init)
+#     except: # For MaxIter and Optimization Errors
+#         gfit = None
+#     return gfit
 
 
 # Function used to calcuate the centroid for each object

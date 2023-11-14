@@ -1,7 +1,11 @@
 import sys
+import json
+import requests
 import numpy as np
 
 from scipy.optimize import curve_fit
+from astropy.io import ascii
+from astropy.table import Table
 
 """
 Utility functions used by the LCO_redux script.
@@ -106,7 +110,7 @@ def gauss2d_fitter(im,width):
     return gfit
 
 
-def ps_query(ra,dec,rad,ndetect=5,save_result=False,save_dir="./"):
+def ps1_query(ra,dec,rad,ndetect=5,save_result=False,save_dir="./"):
     """
     Function to perform Pan-STARRS1 (PS1) cone search
 
@@ -127,8 +131,9 @@ def ps_query(ra,dec,rad,ndetect=5,save_result=False,save_dir="./"):
 
     Returns:
     --------
-    ps_tab: Pandas DataFrame
-        Query results. Returns None if query unsuccessful.
+    ps_tab: DataFrame
+        Query results as a pandas DataFrame. 
+        Returns None if query unsuccessful.
     """
 
     # Create an Empty DataFrame
@@ -229,22 +234,41 @@ def ps1search(table="mean",release="dr1",format="csv",columns=None,
     Do a general search of the PS1 catalog (possibly without ra/dec/radius)
     
     Parameters
-    ----------
-    table (string): mean, stack, or detection
-    release (string): dr1 or dr2
-    format: csv, votable, json
-    columns: list of column names to include (None means use defaults)
-    baseurl: base URL for the request
-    verbose: print info about request
-    **kw: other parameters (e.g., 'nDetections.min':2).  Note this is required!
+    -----------
+    table: str 
+        mean, stack, or detection
+    release: str
+        dr1 or dr2
+    format: str
+        csv, votable, json
+    columns: list
+        List of column names to include (None means use defaults)
+    baseurl: str
+        Base URL for the request
+    verbose: bool
+        Whether to print info about request
+    **kw: dict
+        Other parameters (e.g., {'nDetections.min':2}) Note this is required!
+
+    Returns:
+    --------
+    query_result: str or dict
+        The result of the query. Returns a string if format is csv 
+        or votable, and a dict if format is JSON.
+
     """
     
+    # Check for search params
     data = kw.copy()
     if not data:
         raise ValueError("You must specify some parameters for search")
+
+    # Check table/release are valid
     checklegal(table,release)
     if format not in ("csv","votable","json"):
         raise ValueError("Bad value for format")
+
+
     url = "{baseurl}/{release}/{table}.{format}".format(**locals())
     if columns:
         # check that column values are legal
@@ -258,26 +282,34 @@ def ps1search(table="mean",release="dr1",format="csv",columns=None,
                 badcols.append(col)
         if badcols:
             raise ValueError('Some columns not found in table: {}'.format(', '.join(badcols)))
-        # two different ways to specify a list of column values in the API
-        # data['columns'] = columns
+        # Specify a list of column values in the API
         data['columns'] = '[{}]'.format(','.join(columns))
 
-    # either get or post works
+    # Perform query
     r = requests.get(url, params=data, timeout=600)
 
     if verbose:
         print(r.url)
     r.raise_for_status()
     if format == "json":
-        return r.json()
+        query_result = r.json()
     else:
-        return r.text
+        query_result = r.text
+
+    return query_result
 
 
 def checklegal(table,release):
-    """Checks if this combination of table and release is acceptable
-    
-    Raises a VelueError exception if there is problem
+    """
+    Checks if a combination of table and release is acceptable.
+    Raises a VelueError exception if there is problem.
+
+    Parameters:
+    -----------
+    table: str
+        mean, stack, or detection
+    release: str 
+        dr1 or dr2
     """
     
     releaselist = ("dr1", "dr2")
@@ -289,3 +321,36 @@ def checklegal(table,release):
         tablelist = ("mean", "stack", "detection")
     if table not in tablelist:
         raise ValueError("Bad value for table (for {} must be one of {})".format(release, ", ".join(tablelist)))
+
+
+def ps1metadata(table="mean",release="dr1",
+    baseurl="https://catalogs.mast.stsci.edu/api/v0.1/panstarrs"):
+    """
+    Return metadata for the specified PS1 catalog and table
+    
+    Parameters:
+    -----------
+    table: str
+        mean, stack, or detection
+    release: str 
+        dr1 or dr2
+    baseurl: str
+        Base URL for the request
+    
+    Returns:
+    --------
+    tab: Table
+        An astropy table with columns name, type, description
+    """
+    
+    checklegal(table,release)
+    url = "{baseurl}/{release}/{table}/metadata".format(**locals())
+    r = requests.get(url)
+    r.raise_for_status()
+    v = r.json()
+    # convert to astropy table
+    tab = Table(
+        rows=[(x['name'],x['type'],x['description']) for x in v],
+        names=('name','type','description')
+    )
+    return tab
