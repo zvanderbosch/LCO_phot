@@ -158,12 +158,14 @@ def get_centroid(data,xpix,ypix,f,progress=True):
 #########################################################
 #########################################################
 
-def lco_redux(fits_name, query_constraints=None):
+def lco_redux(fits_name, target_coord, comp_coord, query_constraints=None):
 
     # RA-Dec Coords of Target & Comps in ProEM Frame
     target = [132.693196,19.939404]
-    #comp1 = [132.7007711,19.9413390] 
     comp1 = [132.6966642,19.9262534]
+
+    # Perform Pan-STARRS1 query to get source mag
+    
 
 
     # Pan-STARRS1 Magnitudes of Target
@@ -173,6 +175,19 @@ def lco_redux(fits_name, query_constraints=None):
     PSmagg_err = 0.0556
     PSmagr_err = 0.0063
     PSmagi_err = 0.0223
+
+    print('Performing the Pan-STARRS Query...')
+    # results = ps1cone(ra_center,dec_center,radius,release='dr2',columns=columns,**constraints)
+    results = ps1_query(
+        ra_center,
+        dec_center,
+        radius,
+        release='dr2',
+        table='mean',
+        columns=None,
+        **constraints
+    )
+    print('Complete...\n')
 
     # Get Data & Header Info for first image
     hdu0 = fits.open(fits_name)
@@ -317,7 +332,6 @@ def lco_redux(fits_name, query_constraints=None):
 
     # First Check for a Previously Saved Query
     qpath = '/home/zachvanderbosch/data/object/ZTF/ztf_data/WDJ0850+1956/LCO/'
-    #qpath = '/Users/zvander/data/object/SDSSJ0852+2130/LCO/'
     if os.path.isfile(qpath + 'ps_query.csv'):
         print('\nLoading Pan-STARRS Query...\n')
         ps_tab = pd.read_csv(qpath + 'ps_query.csv')
@@ -339,10 +353,7 @@ def lco_redux(fits_name, query_constraints=None):
         center = w0.wcs_pix2world([[float(imcols)/2,float(imrows)/2]],1)
         ra_center = center[0][0]
         dec_center = center[0][1]
-        # Search Radius Defined to Reach From Center-to-Corner of Image
-        #radius = (header0['PIXSCALE'] * (2.0**0.5) * float(header0['NAXIS1'])/2) / 3600.0
-        #radius = 25.0/60.0
-        radius = 18.0/60.0
+        radius = 18.0/60.0 # 18 arcmin radius
         print('\nSearch Radius = {:.2f} arcmin'.format(radius*60.0))
 
         # Perform the Cone Search

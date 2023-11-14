@@ -15,6 +15,30 @@ Last Updated: 2023-11-13
 """
 
 
+def angle_sep(d1,d2,a1,a2):
+    """
+    Function to calculate angular separation between two 
+    RA/Dec coordinates.
+
+    Parameters:
+    -----------
+    d1,d2:
+        Declinations to compare
+    a1,a2: floa
+        Right Ascensions to compare
+
+    Returns:
+    --------
+    sep: float
+        Separation in arcseconds
+    """
+    rad = np.radians(np.asarray([d1,d2,a1,a2]))
+    asep = np.arccos(np.sin(rad[0])*np.sin(rad[1])+
+                     np.cos(rad[0])*np.cos(rad[1])*
+                     np.cos(rad[3]-rad[2]))
+    sep = np.degrees(asep)*3600.0 # Arcseconds 
+    return sep
+
 
 def progress_bar(count,total,action):
     """
