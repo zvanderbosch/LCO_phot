@@ -7,7 +7,6 @@ import astropy.units as u
 import matplotlib.pyplot as plt
 import matplotlib as mpl
 
-from glob import glob
 from astropy import wcs
 from astropy.io import fits
 from astropy.io import ascii
@@ -18,13 +17,9 @@ from astropy.visualization import ZScaleInterval
 from astropy.utils.exceptions import AstropyWarning
 from astropy.coordinates import EarthLocation
 from astropy.coordinates import SkyCoord
-from astropy.modeling.fitting import LevMarLSQFitter
-from astropy.modeling.models import Gaussian2D,Const2D
 from scipy.optimize import curve_fit
-from scipy.optimize import OptimizeWarning
 from scipy.stats import gaussian_kde
 from photutils import DAOStarFinder
-from photutils.centroids import centroid_2dg
 from photutils import aperture_photometry
 from photutils import CircularAperture
 from photutils import CircularAnnulus
@@ -40,9 +35,10 @@ Written by Zach Vanderbosch
 Last Updated 11/13/2023
 """
 
-# Catch Scipy OptimizeWarning as an error
-#warnings.simplefilter("error", OptimizeWarning)
-warnings.filterwarnings("ignore")
+# Ignore all warnings
+# warnings.filterwarnings("ignore")
+# Supress annoying Astropy Warning Messages
+# warnings.simplefilter('ignore', category=AstropyWarning)
 
 # #############################################################
 # ##
@@ -162,10 +158,7 @@ def get_centroid(data,xpix,ypix,f,progress=True):
 #########################################################
 #########################################################
 
-def lco_redux(fits_name):
-
-    # Supress annoying Astropy Warning Messages
-    warnings.simplefilter('ignore', category=AstropyWarning)
+def lco_redux(fits_name, query_constraints=None):
 
     # RA-Dec Coords of Target & Comps in ProEM Frame
     target = [132.693196,19.939404]
@@ -183,8 +176,6 @@ def lco_redux(fits_name):
 
     # Get Data & Header Info for first image
     hdu0 = fits.open(fits_name)
-    # image0 = hdu0[0].data
-    # header0 = hdu0[0].header
     image0 = hdu0[1].data
     header0 = hdu0[1].header
     hdu0.close()
@@ -333,16 +324,16 @@ def lco_redux(fits_name):
     else: # If no query, perform a new one 
 
         # Query Constraints
-        constraints = {'ng.gt':3,  # Minimum 5 Detections per filter
-                       'nr.gt':3,
-                       'ni.gt':3,
-                       'nz.gt':3,
-                       'ny.gt':3,
-                       'gMeanPSFMag.gt':14.0, # Dimmer than the Saturation
-                       'rMeanPSFMag.gt':14.0, # Limit in all Filters
-                       'iMeanPSFMag.gt':14.0,
-                       'zMeanPSFMag.gt':14.0,
-                       'yMeanPSFMag.gt':14.0}
+        if query_constraints is None:
+            query_constraints = {
+                'ng.gt':3,
+                'nr.gt':3,
+                'ni.gt':3,
+                'nDetections.gt':11,
+                'gMeanPSFMag.gt':14.0,
+                'rMeanPSFMag.gt':14.0,
+                'iMeanPSFMag.gt':14.0
+            }
 
         # Define central RA/Dec of the image
         center = w0.wcs_pix2world([[float(imcols)/2,float(imrows)/2]],1)
@@ -356,7 +347,16 @@ def lco_redux(fits_name):
 
         # Perform the Cone Search
         print('Performing the Pan-STARRS Query...')
-        results = ps1cone(ra_center,dec_center,radius,release='dr2',columns=columns,**constraints)
+        # results = ps1cone(ra_center,dec_center,radius,release='dr2',columns=columns,**constraints)
+        results = ps1_query(
+            ra_center,
+            dec_center,
+            radius,
+            release='dr2',
+            table='mean',
+            columns=None,
+            **constraints
+        )
         print('Complete...\n')
 
         # Convert Results into an Astropy Table, improve formatting,

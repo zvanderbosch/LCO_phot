@@ -110,7 +110,8 @@ def gauss2d_fitter(im,width):
     return gfit
 
 
-def ps1_query(ra,dec,rad,ndetect=5,save_result=False,save_dir="./"):
+def ps1_query(ra,dec,rad,save_result=False,save_dir="./",
+    table="mean",release="dr1",format="csv",columns=None,**constraints):
     """
     Function to perform Pan-STARRS1 (PS1) cone search
 
@@ -136,18 +137,16 @@ def ps1_query(ra,dec,rad,ndetect=5,save_result=False,save_dir="./"):
         Returns None if query unsuccessful.
     """
 
-    # Create an Empty DataFrame
-    columns = """objID,raMean,decMean,nDetections,ng,nr,ni,nz,ny,
-            gMeanPSFMag,gMeanPSFMagErr,rMeanPSFMag,rMeanPSFMagErr,
-            iMeanPSFMag,iMeanPSFMagErr,zMeanPSFMag,zMeanPSFMagErr,
-            yMeanPSFMag,yMeanPSFMagErr,gMeanKronMag,gMeanKronMagErr,
-            rMeanKronMag,rMeanKronMagErr,iMeanKronMag,iMeanKronMagErr,
-            zMeanKronMag,zMeanKronMagErr,yMeanKronMag,yMeanKronMagErr""".split(',')
-    columns = [x.strip() for x in columns]
-    columns = [x for x in columns if x and not x.startswith('#')]
-
-    # Query Constraints
-    constraints = {'nDetections.gt':ndetect}
+    # Define columns to return from query
+    if columns is None:
+        columns = """objID,raMean,decMean,nDetections,ng,nr,ni,nz,ny,
+                gMeanPSFMag,gMeanPSFMagErr,rMeanPSFMag,rMeanPSFMagErr,
+                iMeanPSFMag,iMeanPSFMagErr,zMeanPSFMag,zMeanPSFMagErr,
+                yMeanPSFMag,yMeanPSFMagErr,gMeanKronMag,gMeanKronMagErr,
+                rMeanKronMag,rMeanKronMagErr,iMeanKronMag,iMeanKronMagErr,
+                zMeanKronMag,zMeanKronMagErr,yMeanKronMag,yMeanKronMagErr""".split(',')
+        columns = [x.strip() for x in columns]
+        columns = [x for x in columns if x and not x.startswith('#')]
 
     # Perform the Cone Search
     results = ps1cone(ra,dec,radius/3600.,release='dr2',columns=columns,**constraints)
