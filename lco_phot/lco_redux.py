@@ -3,8 +3,11 @@ import sys
 import warnings
 import numpy as np
 import pandas as pd
-from glob import glob
 import astropy.units as u
+import matplotlib.pyplot as plt
+import matplotlib as mpl
+
+from glob import glob
 from astropy import wcs
 from astropy.io import fits
 from astropy.io import ascii
@@ -27,20 +30,18 @@ from photutils import CircularAperture
 from photutils import CircularAnnulus
 from ps1_tools import ps1cone, angle_sep
 
-import matplotlib.pyplot as plt
-import matplotlib as mpl
-
 """
 Python-based reduction of Las Cumbres Observatory (LCO)
 imaging data from SINISTRO instruments.
 
 Written by Zach Vanderbosch
-Last Updated 10/31/2019
+Last Updated 11/13/2023
 """
 
 # Catch Scipy OptimizeWarning as an error
 #warnings.simplefilter("error", OptimizeWarning)
 warnings.filterwarnings("ignore")
+
 #############################################################
 ##
 ##  Progress Bar Code. I got this code from Stack Overflow,
