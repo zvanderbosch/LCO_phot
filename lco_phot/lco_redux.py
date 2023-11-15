@@ -214,9 +214,7 @@ def lco_redux_target(
     _,_,xsig_init,ysig_init = get_centroid(
         image,
         comp_pixcoord[:,0],
-        comp_pixcoord[:,1],
-        fits_name,
-        progress=False
+        comp_pixcoord[:,1]
     )
     fwhm_init = abs(2.3548*(xsig_init[0] + ysig_init[0]) / 2.0)
     print(f'Initial FWHM Estimate: {fwhm_init:.2f} pixels ({fwhm_init*platescale:.2f} arcsec)')
@@ -421,7 +419,7 @@ def lco_redux_target(
 
     # Get pixel coordinates of objects and find centroids
     wpix = np.asarray(object_coords_keep)
-    xc,yc,_,_ = get_centroid(image,wpix[:,0],wpix[:,1],fits_name,progress=True)
+    xc,yc,_,_ = get_centroid(image, wpix[:,0], wpix[:,1])
 
 
 
