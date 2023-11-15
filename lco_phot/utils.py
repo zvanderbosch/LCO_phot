@@ -13,7 +13,7 @@ from astropy.coordinates import EarthLocation
 Utility functions used by the LCO_redux script.
 
 Author: Zach Vanderbosch (Caltech)
-Last Updated: 2023-11-13
+Last Updated: 2023-11-14
 """
 
 
@@ -24,10 +24,10 @@ def angle_sep(d1,d2,a1,a2):
 
     Parameters:
     -----------
-    d1,d2:
-        Declinations to compare
-    a1,a2: floa
-        Right Ascensions to compare
+    d1,d2: float
+        Declinations to compare (decimal degrees)
+    a1,a2: float
+        Right Ascensions to compare (decimal degrees)
 
     Returns:
     --------
@@ -114,15 +114,31 @@ def gauss2d_fitter(im,width):
 
 
 
-def get_centroid(data,xpix,ypix,fits_name,bw=15,progress=True):
+def get_centroid(data,xpix,ypix,bw=15):
     """
     Function to calcuate the centroid of an object
 
     Parameters:
     -----------
-    data = image pixel data
-    xpix = list of x-pixel coordinates for objects
-    ypix = list of y-pixel coordinates for objects
+    data: array
+        Image pixel data
+    xpix: list
+        List of x-pixel coordinates for objects
+    ypix: list 
+        List of y-pixel coordinates for objects
+    bw: int
+        Image cutout size in pixels
+    
+    Returns:
+    --------
+    xcentroids: array
+        X-centroids
+    ycentroids: array
+        Y-centroids
+    xstddevs: array
+        X-standard deviations
+    ystddevs: array
+        Y-standard deviations
     """
 
     Ncen = len(xpix)
@@ -146,7 +162,7 @@ def get_centroid(data,xpix,ypix,fits_name,bw=15,progress=True):
 
             # Check that the fit converged and that the centroid
             # has not moved too far from its original location. 
-            # If it has, just use the original location from DAOStarFinder
+            # If it has, just use the original provided location.
             if gfit is None:
                 xcentroids[k] = xpix[k]
                 ycentroids[k] = ypix[k]
@@ -182,12 +198,45 @@ def poly_linear(x,z,a):
 
 def polyfit(fit_x,fit_y,err_x,err_y,fit_option, num_iter=10, sigma_threshold=2.0):
     """
-    Polynomial fitting routine with iterative
-    sigma-clipping.
+    Polynomial fitting routine with iterative sigma-clipping.
+
+    Parameters:
+    -----------
+    fit_x: array
+        x values to fit
+    fit_y: array
+        y values to fit
+    err_x: array
+        x value uncertainties
+    err_y: array
+        y value uncertainties
+    fit_option: str
+        '1' or '2', determines which function will be used
+            '1' = poly_linear_fixed
+            '2' = poly_linear
+    num_iter: int
+        Number of rejection iterations
+    sigma_threshold: float
+        Sigma clipping theshold in numbers of standard deviations
+
+    Returns:
+    --------
+    pfit: list
+        Best fit parameters
+    cov: list
+        Covariance matrix
+    fit_x: array
+        x values after sigma-clipping
+    fit_y: array
+        y values after sigma-clipping
+    err_x: array
+        x value uncertainties after sigma-clipping
+    err_y: array
+        y value uncertainties after sigma-clipping
     """
 
     for i in range(num_iter):
-        
+
         # Calculate the average P2P scatter
         Nv = len(fit_x)
         next_values = np.append(fit_y[1:],fit_y[-2])
@@ -214,6 +263,20 @@ def polyfit(fit_x,fit_y,err_x,err_y,fit_option, num_iter=10, sigma_threshold=2.0
 
 
 def get_location(sitename):
+    """
+    Function that returns astropy EarthLocation based
+    on given sitename from LCO image header.
+
+    Parameters:
+    -----------
+    sitename: str
+        The value of the SITE header keyword in LCO image
+    
+    Returns:
+    --------
+    loc: EarthLocation object
+        EarthLocation corresponding to sitename
+    """
 
     if 'McDonald' in sitename:
         loc = EarthLocation.of_site('mcdonald')
