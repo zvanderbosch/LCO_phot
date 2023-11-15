@@ -47,18 +47,23 @@ WCS_ORIGIN = 0
 
 
 
-def lco_redux(fits_name, target_coord, comp_coord, 
+def lco_redux_target(fits_name, target_coord, comp_coord=None, 
     r_aperture=1.0, r_inner_annulus=5.0, r_outer_annulus=10.0,
+    DAO_fwhm=1.0, DAO_bkgscale=3.0, DAO_sharp_high=0.6, DAO_peaklimit=1.0,
     target_query_constraints=None, target_query_save=False, target_query_dir=None, 
     target_query_name=None, target_query_format='csv',full_query_constraints=None, 
     full_query_save=False, full_query_dir=None, full_query_name=None, 
     full_query_format='csv', phot_save=False, phot_dir=None, phot_name=None, 
     plot_cutout=False, plot_save=False, plot_dir=None, plot_name=None, 
     verbose=False):
+    """
+    Aperture photometry 
+    """
 
-    # RA-Dec Coords of Target & Comps in ProEM Frame
-    target = [target_coord.ra.deg,target_coord.dec.deg]
-    comp1 = [comp_coord.ra.deg,comp_coord.dec.deg]
+    # RA-Dec Coords of Target & Comp
+    target = [target_coord.ra.deg, target_coord.dec.deg]
+    if comp_coord is not None:
+        comp = [comp_coord.ra.deg, comp_coord.dec.deg]
 
     # Perform Pan-STARRS1 query to get source magnitudes
     print('Performing Target Pan-STARRS Query...',end='')
@@ -89,13 +94,13 @@ def lco_redux(fits_name, target_coord, comp_coord,
         PSmagr_err = ps1_target.rMeanPSFMagErr.iloc[0]
         PSmagi_err = ps1_target.iMeanPSFMagErr.iloc[0]
 
-    # Get Data & Header Info for first image
+    # Get Data & Header Info for image
     with fits.open(fits_name) as hdul:
         image = hdul[1].data
         header = hdul[1].header
 
 
-    # Get WCS and other info from the first image header
+    # Get WCS and other info from the image header
     w = wcs.WCS(header)
     site = header['SITE']
     tele = header['TELESCOP']
@@ -121,9 +126,10 @@ def lco_redux(fits_name, target_coord, comp_coord,
 
     # Get pixel coordinates of target and comp
     targ_pixcoord = w.wcs_world2pix([target],WCS_ORIGIN)
-    comp_pixcoord = w.wcs_world2pix([comp1],WCS_ORIGIN)
+    if comp_coord is not None:
+        comp_pixcoord = w.wcs_world2pix([comp],WCS_ORIGIN)
 
-    # Perform an Initial 2DGaussian Fit to Copmarison Star for FWHM estimate
+    # Perform an Initial 2DGaussian Fit for FWHM estimate
     _,_,xsig_init,ysig_init = get_centroid(
         image,
         comp_pixcoord[:,0],
@@ -132,8 +138,7 @@ def lco_redux(fits_name, target_coord, comp_coord,
         progress=False
     )
     fwhm_init = abs(2.3548*(xsig_init[0] + ysig_init[0]) / 2.0)
-    if fwhm_init > 15:
-        fwhm_init = 6.0
+    print(f'Initial FWHM Estimate: {fwhm_init:.2f} pixels ({fwhm_init*platescale:.2f} arcsec)')
 
 
     # Find sources in first frame with DAOfind and sort 
@@ -152,17 +157,22 @@ def lco_redux(fits_name, target_coord, comp_coord,
 
 
     # Get sources with DAOfind and sort
-    print('\nIdentifying Sources in LCO Image...')
     bkgmed = np.nanmedian(image.flatten()) 
-    bkgMAD = mad_std(image)  
-    # daofind0 = DAOStarFinder(fwhm=1.0*fwhm_init,
-    #                          threshold=bkgmed+3.0*bkgMAD,
-    #                          sharphi=0.6,
-    #                          peakmax=0.9*linlimit)
-    daofind0 = DAOStarFinder(fwhm=1.4*fwhm_init,
-                             threshold=0.5*bkgmed,
-                             sharphi=0.6,
-                             peakmax=linlimit)  
+    bkgMAD = mad_std(image) 
+    bkgThreshold = bkgmed+DAO_bkgscale*bkgMAD
+    print('\nBackground Statistics:')
+    print('------------------------')
+    print(f'   Median: {bkgmed:.2f}') 
+    print(f'      MAD: {bkgMAD:.2f}') 
+    print(f'Threshold: {bkgThreshold:.2f}')
+
+    print('\nIdentifying Sources in LCO Image...')
+    daofind0 = DAOStarFinder(
+        fwhm=DAO_fwhm*fwhm_init,
+        threshold=bkgThreshold,
+        sharphi=DAO_sharp_high,
+        peakmax=linlimit
+    )  
     sources0 = daofind0(image, mask=mask)
     if sources0 is None: # No sources found
         print('No Sources Detected!')
@@ -499,9 +509,6 @@ def lco_redux(fits_name, target_coord, comp_coord,
     bkg_sum = bkg_median * aperture.area
     ap_phot[:] = phot_table['aperture_sum_0'] - bkg_sum
     ap_mags = 25.0 - 2.5*np.log10(ap_phot)
-
-    print(' Median Background: {:.3f} c/pix'.format(bkg_median[0]))
-    print('Average Background: {:.3f} c/pix'.format(phot_table['aperture_sum_1'][0]/annulus.area))
 
     # Calculate Photometry Errors & Signal-to-Noise
     readn = header['RDNOISE'] # Read Noise
