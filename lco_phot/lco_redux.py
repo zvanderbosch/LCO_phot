@@ -47,7 +47,7 @@ WCS_ORIGIN = 0
 
 
 
-def lco_redux_target(fits_name, target_coord, comp_coord=None, 
+def lco_redux_target(fits_name, target_coord, comp_coord=None, source_match_limit=50,
     r_aperture=1.0, r_inner_annulus=5.0, r_outer_annulus=10.0,
     DAO_fwhm=1.0, DAO_bkgscale=3.0, DAO_sharp_high=0.6, DAO_peaklimit=1.0,
     target_query_constraints=None, target_query_save=False, target_query_dir=None, 
@@ -69,6 +69,9 @@ def lco_redux_target(fits_name, target_coord, comp_coord=None,
     comp_coords: SkyCoord object
         Coordinates of comparison star. Only used for initial
         FWHM estimate. If None, target object used for FWHM.
+    source_match_limit: int
+        Minimum number of PS1-matched sources allowed 
+        for good photometric calibration. 
     r_aperture: float
         Aperture radius, in number of FWHM
     r_inner_annulus: float
@@ -127,6 +130,14 @@ def lco_redux_target(fits_name, target_coord, comp_coord=None,
         If None, filename is <fits_name>_cutout.png
     verbose: bool
         Whether to print photometry results to stdout at end.
+
+
+    Returns:
+    --------
+    phot_dat: DataFrame
+        Photometry results. Returns None if no sources
+        detected inimage, or if number of PS1-matched 
+        sources less than source_match_limit.
     """
 
     # RA-Dec Coords of Target & Comp
@@ -245,7 +256,7 @@ def lco_redux_target(fits_name, target_coord, comp_coord=None,
     sources0 = daofind0(image, mask=mask)
     if sources0 is None: # No sources found
         print('No Sources Detected!')
-        return
+        return None
 
 
     # Convert source table to pandas DataFrame and sort by peak flux
@@ -399,7 +410,8 @@ def lco_redux_target(fits_name, target_coord, comp_coord=None,
     tab = pd.concat(matched_entries,ignore_index=True)
     Nobj_keep = len(tab)
     print('\n{} out of {} Objects Matched\n'.format(Nobj_keep,Nobj))
-    if Nobj_keep < 50: # Too few sources for calibration
+    if Nobj_keep < source_match_limit : # Too few sources for calibration
+        print(f'Number of objects matched below source_match_limit = {source_match_limit}')
         return None
 
 
@@ -742,15 +754,4 @@ def lco_redux_target(fits_name, target_coord, comp_coord=None,
     print("\nFinished! \n")
 
     return phot_dat
-
-
-
-
-
-
-
-
-
-
-
 
