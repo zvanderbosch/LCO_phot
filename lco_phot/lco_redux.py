@@ -610,7 +610,7 @@ def lco_redux_target(
     sn_target = phot_sn[0]
 
 
-    """ Fit a Linear Model to the Mag v. Mag trend """
+    """ Fit a Linear Model to the Mag-Diff vs. PS1-Color trend """
 
     # Choose Relevant PS Magnitudes Based on LCO filter
     if filt == 'gp':
