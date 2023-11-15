@@ -503,7 +503,7 @@ def lco_redux_target(
         vmin,vmax = ZS.get_limits(implot)
 
         fig = plt.figure(figsize=(6,6))
-        ax = fig.add_subplot(111)
+        ax = fig.add_subplot(111,projection=w)
 
         ax.imshow(implot, vmin=vmin, vmax=vmax, cmap='Greys_r', origin='lower',
             extent=(xlow-1,xlow+2*cutout_width,
@@ -540,8 +540,10 @@ def lco_redux_target(
         ax.text(0.05,0.92,fig_text, fontsize=16,ha='left', c='r',fontweight='heavy',
             transform=ax.transAxes, path_effects=[pe.withStroke(linewidth=4, foreground="silver")])
 
-
-        ax.tick_params(color='silver', labelcolor='silver')
+ 
+        ax.set_xlabel('R.A.',fontsize=14,color='silver')
+        ax.set_ylabel('Declination',fontsize=14,color='silver')
+        ax.tick_params(which='both', color='silver', labelcolor='silver')
         for spine in ax.spines.values():
             spine.set_edgecolor('silver')
         fig.set_facecolor('k')
