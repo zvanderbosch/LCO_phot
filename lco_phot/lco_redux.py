@@ -47,7 +47,8 @@ WCS_ORIGIN = 0
 
 
 
-def lco_redux_target(fits_name, target_coord, comp_coord=None, source_match_limit=50,
+def lco_redux_target(
+    fits_name, target_coord, comp_coord=None, source_match_limit=50,
     r_aperture=1.0, r_inner_annulus=5.0, r_outer_annulus=10.0,
     DAO_fwhm=1.0, DAO_bkgscale=3.0, DAO_sharp_high=0.6, DAO_peaklimit=1.0,
     target_query_constraints=None, target_query_save=False, target_query_dir=None, 
@@ -58,7 +59,7 @@ def lco_redux_target(fits_name, target_coord, comp_coord=None, source_match_limi
     verbose=False):
     """
     Aperture photometry routine returning a Pan-STARRS1 calibrated
-    magnitude and uncertainty for a single targe of interest.
+    magnitude and uncertainty for a single target of interest.
 
     Parameters:
     -----------
@@ -295,7 +296,7 @@ def lco_redux_target(fits_name, target_coord, comp_coord=None, source_match_limi
 
 
 
-    """ Perform of Load Pan-STARRS Query """
+    """ Perform Pan-STARRS Query, or Load Prior Results """
 
 
     # First Check for a Previously Saved Query
@@ -324,7 +325,7 @@ def lco_redux_target(fits_name, target_coord, comp_coord=None, source_match_limi
         center = w.wcs_pix2world([[float(imcols)/2,float(imrows)/2]],WCS_ORIGIN)
         ra_center = center[0][0]
         dec_center = center[0][1]
-        radius = 18.0*60. # 18 arcmin radius
+        radius = 18.0*60. # 18 arcmin radius converted to arcsec
         print('\nSearch Radius = {:.2f} arcmin'.format(radius/60))
 
         # Perform the Cone Search
@@ -594,7 +595,7 @@ def lco_redux_target(fits_name, target_coord, comp_coord=None, source_match_limi
     # Calculate Photometry Errors & Signal-to-Noise
     readn = header['RDNOISE'] # Read Noise
     darkn = 0.002 # Dark Noise (e-/pixel/s)
-    phot_err = np.sqrt(ap_phot + bkg_sum + (0.002*texp+readn**2)*aperture.area)
+    phot_err = np.sqrt(ap_phot + bkg_sum + (darkn*texp+readn**2)*aperture.area)
     phot_sn = ap_phot/phot_err
     mag_err = 1.087/phot_sn
 
@@ -636,61 +637,45 @@ def lco_redux_target(fits_name, target_coord, comp_coord=None, source_match_limi
 
 
     # Estimate the Mode of the Color Term with KDE
-    bw_color = 0.04
+    bw_color = 0.04 # bin width
     color_grid = np.linspace(0.1,1.5,5000)
     kde = gaussian_kde(color[gidx], bw_method=bw_color/color[gidx].std(ddof=1))
     kdevals = kde.evaluate(color_grid)
     mode_color = color_grid[kdevals == max(kdevals)][0]
 
 
-    # Perform polynomial fit to PSmag versus instrumental mag
-    params,covar,goodx,goody,errx,erry = polyfit(
-        ap_mags[gidx],
-        ps_mags[gidx],
-        mag_err[gidx],
-        ps_errs[gidx],
-        '1'
-    )
+    # Perform polynomial fit to PS-color versus magnitude difference
     psap_diff = ps_mags[gidx]-ap_mags[gidx]
     psap_diff_err = np.sqrt(ps_errs[gidx]**2 + mag_err[gidx]**2)
 
-    # Perform polynomial fit to PS-color versus magnitude difference
-    params2,covar2,goodx2,goody2,errx2,erry2 = polyfit(
+    params,covar,goodx,_,_,_ = polyfit(
         color[gidx],
         psap_diff,
         color_errs[gidx],
         psap_diff_err,
-        '2'
+        '2' # Uses poly_linear function
     )
 
     # Calculate Magnitude of Target Using Best Fit Lines
     if (filt == 'gp') or (filt == 'rp'):
         PScolor = PSmagg - PSmagr
+        PScolorerr = np.sqrt(PSmagg_err**2 + PSmagr_err**2)
     elif filt == 'ip':
         PScolor = PSmagr - PSmagi
-    # psmag_target = poly_linear_fixed(imag_target,*params)
-    psmag_target = poly_linear(PScolor,*params2) + imag_target
+        PScolorerr = np.sqrt(PSmagr_err**2 + PSmagi_err**2)
+    psmag_target = poly_linear(PScolor,*params) + imag_target
 
-    # Generate a Best fit Line (for plotting purposes later)
-    fitx = np.linspace(min(ap_mags[gidx]),max(ap_mags[gidx]),1000)
-    fitx2 = np.linspace(min([min(color[gidx]),PScolor]),
-                        max(color[gidx]),1000)
-    fity = poly_linear_fixed(fitx,*params)
-    fity2 = poly_linear(fitx2,*params2)
 
-    # Calculate Magnitude Errors
-    xerr = covar[0][0]
-    # psmagerr_target = np.sqrt(xerr**2 + ierr_target**2)
-    Zerr = covar2[0][0]
-    cerr = covar2[1][1]
+    # Calculate Magnitude Uncertainty
+    color_coeff = params[1]
+    Zerr = covar[0][0]
+    cerr = covar[1][1]
     psmagerr_target = np.sqrt(
         Zerr**2 + 
         ierr_target**2 + 
-        (-0.01*cerr)**2 + 
-        (params2[1]*PSmagg_err)**2 + 
-        (params2[1]*PSmagr_err)**2
+        (PScolor*cerr)**2 + 
+        (PScolorerr*color_coeff)**2
     )
-
 
 
     """ Apply Barycentric Time Corrections """
@@ -700,7 +685,6 @@ def lco_redux_target(fits_name, target_coord, comp_coord=None, source_match_limi
     ltt_bary = t.light_travel_time(target_coord)  # Light travel time to barycenter
     tmjd = t.mjd                            # MJD times
     tbjd = t.tdb.jd + ltt_bary.jd           # Barycentric times (rescaled UTC + LTT)
-
 
 
     """ Print out the Results """
@@ -718,8 +702,8 @@ def lco_redux_target(fits_name, target_coord, comp_coord=None, source_match_limi
         print('               MJD = {:.7f}'.format(tmjd))
         print('               BJD = {:.7f}'.format(tbjd))
         print('         Mode(g-r) = {:.4f}'.format(mode_color))
-        print('    Zero-Point Mag = {:.4f}'.format(params2[0]))
-        print('        Color Term = {:.4f}'.format(params2[1]))
+        print('    Zero-Point Mag = {:.4f}'.format(params[0]))
+        print('        Color Term = {:.4f}'.format(params[1]))
 
 
 
@@ -730,8 +714,8 @@ def lco_redux_target(fits_name, target_coord, comp_coord=None, source_match_limi
         'mjd':tmjd,'bjd':tbjd,'date':timeobs.split("T")[0],
         'time':timeobs.split("T")[1],'filter':filt,'texp':texp,
         'mag':psmag_target,'magerr':psmagerr_target,
-        'Zp':params2[0],'Zp_err':Zerr,'cterm':params2[1],
-        'cterm_err':cerr,'Nfit':len(goodx2),'sn':sn_target,
+        'Zp':params[0],'Zp_err':Zerr,'cterm':params[1],
+        'cterm_err':cerr,'Nfit':len(goodx),'sn':sn_target,
         'fwhm':fwhm_mode,'aper_rad (pix)':ap_choice,
         'airmass':airmass,'site_id':siteid,
         'telescope':tele,'temp':temp,'humidity':humidity,
