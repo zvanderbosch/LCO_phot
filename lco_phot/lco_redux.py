@@ -57,7 +57,76 @@ def lco_redux_target(fits_name, target_coord, comp_coord=None,
     plot_cutout=False, plot_save=False, plot_dir=None, plot_name=None, 
     verbose=False):
     """
-    Aperture photometry 
+    Aperture photometry routine returning a Pan-STARRS1 calibrated
+    magnitude and uncertainty for a single targe of interest.
+
+    Parameters:
+    -----------
+    fits_name: str
+        FITS filename
+    target_coord: SKyCoord object
+        coordinates of target object
+    comp_coords: SkyCoord object
+        Coordinates of comparison star. Only used for initial
+        FWHM estimate. If None, target object used for FWHM.
+    r_aperture: float
+        Aperture radius, in number of FWHM
+    r_inner_annulus: float
+        Inner annulus radius, in number of FWHM
+    r_outer_annulus: float
+        Inner annulus radius, in number of FWHM
+    DAO_fwhm: float
+        DAOStarFinder fwhm scaling factor
+    DAO_bkgscale: float
+        DAOStarFinder background scaling factor
+    DAO_sharp_high: float
+        DAOStarFinder sharpness upper limit
+    DAO_peaklimit: float
+        DAOStarFinder peakmax scaling factor
+    target_query_constraints: dict
+        Dict containing PS1 query constraints for target query
+        e.g. {'nDetections.gt': 10}
+    target_query_save: bool 
+        Whether to save target query results
+    target_query_dir: str 
+        Directory to save target query results in
+    target_query_name: str
+        Filename to save target query results as
+    target_query_format: str
+        Query return format: csv, votable, or json
+    full_query_constraints: dict
+        Dict containing PS1 query constraints for full FOV query
+        e.g. {'nDetections.gt': 10}
+    full_query_save: bool 
+        Whether to save full FOV query results
+    full_query_dir: str 
+        Directory to save full FOV query results in
+        If None, chooses current directory.
+    full_query_name: str
+        Filename to save full FOV query results as.
+        If None, filename is ps_query.csv
+    full_query_format: str
+        Query return format: csv, votable, or json
+    phot_save: bool
+        Whether to save photometry results to file 
+    phot_dir: str
+        Directory to save photometry results in
+        If None, chooses current directory.
+    phot_name: str
+        Filename to save photometry results as.
+        If None, filename is <fits_name>_phot.csv
+    plot_cutout: bool
+        Whether to plot and show and image cutout
+    plot_save: bool
+        Whether to save image cutout to file 
+    plot_dir: str
+        Directory to save image cutout in
+        If None, chooses current directory.
+    plot_name: str
+        Filename to save image cutout as.
+        If None, filename is <fits_name>_cutout.png
+    verbose: bool
+        Whether to print photometry results to stdout at end.
     """
 
     # RA-Dec Coords of Target & Comp
